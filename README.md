@@ -12,7 +12,6 @@ This project uses SemVer releases derived from conventional commits on `master`.
 - All commits are expected to follow conventional commit rules.
 - Pull requests are expected to pass the `Validate Commits` check before merge.
 - Pull requests that change Android code are expected to pass the `Validate Code` build-and-test check before merge.
-- Pull requests that change Android code are expected to pass the `Validate SonarCloud` analysis check before merge.
 - Merge conventional commits into `master`, for example `feat:`, `fix:`, and `feat!:` or `BREAKING CHANGE:`.
 - If a push changes release paths but the commit subjects are not conventional, the workflow now fails instead of silently skipping the release.
 - The release workflow calculates the next SemVer version, tags `HEAD` as `vMAJOR.MINOR.PATCH`, builds the signed release APK, and publishes the GitHub release.
@@ -26,10 +25,6 @@ The release workflow can also sign the APK when these repository secrets are con
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
-
-SonarCloud analysis requires this repository secret:
-
-- `SONAR_TOKEN`
 
 The manual `workflow_dispatch` trigger is still available, but the normal path is a push to `master`.
 
