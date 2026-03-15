@@ -1,5 +1,5 @@
 # Cloud Media Provider proxy
-This proxies the [CloudMediaProvider](https://developer.android.com/reference/android/provider/CloudMediaProvider) requests to the Storage Access Framework. It is an Android application with no launcher UI. To remove it, use Settings -> Apps rather than expecting it to appear in the launcher.
+This proxies the [CloudMediaProvider](https://developer.android.com/reference/android/provider/CloudMediaProvider) requests to the Storage Access Framework. It is an Android application with a small launcher UI used to select the SAF tree that backs the provider.
 
 The main objective is to allow Nextcloud to be a source for full-screen contact images in Google Contacts.
 
@@ -23,6 +23,15 @@ Build and install the debug APK:
 ```powershell
 .\gradlew.bat installDebug
 ```
+
+## Configure a SAF source
+Open the app once after installing it and pick a folder tree from Nextcloud or another app that exposes a Storage Access Framework provider. The app stores the persisted read grant and uses that tree as the source for cloud media queries.
+
+Current SAF behavior:
+
+- Images and videos under the selected tree are surfaced as cloud media items.
+- Media metadata is derived from generic SAF document columns.
+- Deletes and albums are not yet modeled.
 
 ## Add the app to the cloud media allowlist
 Do not overwrite the existing allowlist unless you mean to. Some emulator images already include other cloud media providers, such as Google Photos.

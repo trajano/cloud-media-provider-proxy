@@ -16,7 +16,7 @@ class SafCloudMediaProviderTest {
 
         provider.onQueryMedia(Bundle()).use { cursor ->
             assertEquals(
-                "bootstrap",
+                "unconfigured",
                 cursor.extras.getString(CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID),
             )
         }
@@ -28,7 +28,7 @@ class SafCloudMediaProviderTest {
 
         provider.onQueryDeletedMedia(Bundle()).use { cursor ->
             assertEquals(
-                "bootstrap",
+                "unconfigured",
                 cursor.extras.getString(CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID),
             )
         }
@@ -40,7 +40,7 @@ class SafCloudMediaProviderTest {
 
         provider.onQueryAlbums(Bundle()).use { cursor ->
             assertEquals(
-                "bootstrap",
+                "unconfigured",
                 cursor.extras.getString(CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID),
             )
         }
