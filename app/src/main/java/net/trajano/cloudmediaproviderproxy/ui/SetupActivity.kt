@@ -1,16 +1,21 @@
 package net.trajano.cloudmediaproviderproxy.ui
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.view.MenuItem
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import net.trajano.cloudmediaproviderproxy.R
 import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 
-class SetupActivity : Activity() {
+class SetupActivity : AppCompatActivity() {
 
     private lateinit var rootPreferences: SafRootPreferences
     private lateinit var statusTextView: TextView
@@ -18,10 +23,15 @@ class SetupActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_setup)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         rootPreferences = SafRootPreferences(this)
         statusTextView = findViewById(R.id.setup_status)
+        applyWindowInsets(findViewById(R.id.setup_container))
 
+        findViewById<Button>(R.id.back_button).setOnClickListener {
+            finish()
+        }
         findViewById<Button>(R.id.pick_root_button).setOnClickListener {
             chooseSafRoot()
         }
@@ -31,6 +41,15 @@ class SetupActivity : Activity() {
 
         refreshStatus()
     }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean =
+        when (item.itemId) {
+            android.R.id.home -> {
+                finish()
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -96,6 +115,25 @@ class SetupActivity : Activity() {
             authority,
             treeId ?: getString(R.string.setup_status_unknown),
         )
+    }
+
+    private fun applyWindowInsets(container: View) {
+        val basePaddingLeft = container.paddingLeft
+        val basePaddingTop = container.paddingTop
+        val basePaddingRight = container.paddingRight
+        val basePaddingBottom = container.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                basePaddingLeft + systemBars.left,
+                basePaddingTop + systemBars.top,
+                basePaddingRight + systemBars.right,
+                basePaddingBottom + systemBars.bottom,
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(container)
     }
 
     companion object {
