@@ -3,6 +3,9 @@ This proxies the [CloudMediaProvider](https://developer.android.com/reference/an
 
 The main objective is to allow Nextcloud to be a source for full-screen contact images in Google Contacts.
 
+## License
+This project is licensed under the Eclipse Public License 2.0. See [LICENSE](/P:/cloud-media-provider-proxy/LICENSE).
+
 ## Current app identity
 The current scaffold uses these identifiers:
 
