@@ -1,0 +1,92 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer version to build, without the leading v"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve version metadata
+        shell: bash
+        run: |
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION_NAME="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION_NAME="${GITHUB_REF_NAME#v}"
+          else
+            VERSION_NAME="0.1.0-dev"
+          fi
+
+          if [[ ! "${VERSION_NAME}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$ ]]; then
+            echo "Version '${VERSION_NAME}' is not valid SemVer" >&2
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          VERSION_CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+
+          echo "VERSION_NAME=${VERSION_NAME}" >> "${GITHUB_ENV}"
+          echo "VERSION_CODE=${VERSION_CODE}" >> "${GITHUB_ENV}"
+          echo "APK_NAME=cloud-media-provider-proxy-${VERSION_NAME}.apk" >> "${GITHUB_ENV}"
+
+      - name: Prepare release keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > "${RUNNER_TEMP}/release.keystore"
+          echo "RELEASE_STORE_FILE=${RUNNER_TEMP}/release.keystore" >> "${GITHUB_ENV}"
+          echo "RELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "${GITHUB_ENV}"
+          echo "RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "${GITHUB_ENV}"
+          echo "RELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "${GITHUB_ENV}"
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease
+
+      - name: Rename release artifact
+        shell: bash
+        run: |
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [[ ! -f "${APK_PATH}" ]]; then
+            APK_PATH="app/build/outputs/apk/release/app-release-unsigned.apk"
+          fi
+          cp "${APK_PATH}" "app/build/outputs/apk/release/${APK_NAME}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_NAME }}
+          path: app/build/outputs/apk/release/${{ env.APK_NAME }}
+
+      - name: Publish GitHub release asset
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/${{ env.APK_NAME }}
+          generate_release_notes: true

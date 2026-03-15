@@ -6,6 +6,23 @@ The main objective is to allow Nextcloud to be a source for full-screen contact 
 ## License
 This project is licensed under the Eclipse Public License 2.0. See [LICENSE](/P:/cloud-media-provider-proxy/LICENSE).
 
+## Versioning and releases
+This project uses SemVer tags as the release source of truth.
+
+- Create a tag in the form `vMAJOR.MINOR.PATCH`, for example `v0.2.0`.
+- GitHub Actions derives `versionName` from the tag without the leading `v`.
+- `versionCode` is derived as `MAJOR * 10000 + MINOR * 100 + PATCH`.
+- Pushing a SemVer tag builds the release APK and uploads it to the corresponding GitHub release.
+
+The release workflow can also sign the APK when these repository secrets are configured:
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+Without those secrets, the workflow still builds and uploads an unsigned release APK.
+
 ## Current app identity
 The current scaffold uses these identifiers:
 

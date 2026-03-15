@@ -2,6 +2,30 @@ plugins {
     id 'com.android.application'
 }
 
+def defaultVersionName = '0.1.0'
+def versionNameOverride = providers.gradleProperty('versionNameOverride')
+    .orElse(providers.environmentVariable('VERSION_NAME'))
+    .getOrElse(defaultVersionName)
+def versionCodeOverride = providers.gradleProperty('versionCodeOverride')
+    .orElse(providers.environmentVariable('VERSION_CODE'))
+    .map { it as Integer }
+    .getOrElse(semanticVersionToVersionCode(versionNameOverride))
+
+def releaseStoreFile = providers.gradleProperty('releaseStoreFile')
+    .orElse(providers.environmentVariable('RELEASE_STORE_FILE'))
+    .orNull
+def releaseStorePassword = providers.gradleProperty('releaseStorePassword')
+    .orElse(providers.environmentVariable('RELEASE_STORE_PASSWORD'))
+    .orNull
+def releaseKeyAlias = providers.gradleProperty('releaseKeyAlias')
+    .orElse(providers.environmentVariable('RELEASE_KEY_ALIAS'))
+    .orNull
+def releaseKeyPassword = providers.gradleProperty('releaseKeyPassword')
+    .orElse(providers.environmentVariable('RELEASE_KEY_PASSWORD'))
+    .orNull
+def hasReleaseSigning = [releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword]
+    .every { it != null && !it.trim().isEmpty() }
+
 android {
     namespace 'net.trajano.cloudmediaproviderproxy'
     compileSdk 36
@@ -10,10 +34,21 @@ android {
         applicationId 'net.trajano.cloudmediaproviderproxy'
         minSdk 33
         targetSdk 36
-        versionCode 1
-        versionName '0.1.0'
+        versionCode versionCodeOverride
+        versionName versionNameOverride
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    if (hasReleaseSigning) {
+        signingConfigs {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -23,6 +58,9 @@ android {
                 getDefaultProguardFile('proguard-android-optimize.txt'),
                 'proguard-rules.pro'
             )
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -42,4 +80,21 @@ dependencies {
     androidTestImplementation 'androidx.test:core-ktx:1.6.1'
     androidTestImplementation 'androidx.test.ext:junit:1.3.0'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.7.0'
+}
+
+int semanticVersionToVersionCode(String versionName) {
+    def matcher = versionName =~ /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/
+    if (!matcher.matches()) {
+        throw new GradleException("Version '${versionName}' is not valid SemVer")
+    }
+
+    int major = matcher.group(1) as Integer
+    int minor = matcher.group(2) as Integer
+    int patch = matcher.group(3) as Integer
+
+    if (major > 99 || minor > 99 || patch > 99) {
+        throw new GradleException("Version '${versionName}' exceeds the supported 0-99 SemVer range")
+    }
+
+    return (major * 10000) + (minor * 100) + patch
 }
