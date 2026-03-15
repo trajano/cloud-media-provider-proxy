@@ -11,18 +11,10 @@
         android:gravity="center_horizontal"
         android:orientation="vertical">
 
-        <Button
-            android:id="@+id/back_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="start"
-            android:text="@string/back_button" />
-
         <TextView
             android:id="@+id/setup_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="16dp"
             android:paddingBottom="12dp"
             android:text="@string/setup_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Large" />

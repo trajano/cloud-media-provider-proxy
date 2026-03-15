@@ -24,10 +24,11 @@ internal class SafMediaCatalog(
 
     fun buildCollectionInfo(): Bundle {
         val rootUri = configuredRootUri()
+        val snapshot = snapshot(rootUri)
 
         return Bundle().apply {
             putString(KEY_MEDIA_COLLECTION_ID, mediaCollectionId(rootUri))
-            putLong(KEY_LAST_MEDIA_SYNC_GENERATION, 0L)
+            putLong(KEY_LAST_MEDIA_SYNC_GENERATION, snapshot.lastSyncGeneration)
             putString(KEY_ACCOUNT_NAME, rootUri?.authority ?: "Not configured")
             putParcelable(
                 KEY_ACCOUNT_CONFIGURATION_INTENT,
@@ -36,14 +37,7 @@ internal class SafMediaCatalog(
         }
     }
 
-    fun queryMedia(): List<SafMediaItem> {
-        val rootUri = configuredRootUri() ?: return emptyList()
-        val rootDocumentUri = resolveRootDocumentUri(rootUri) ?: return emptyList()
-
-        val mediaItems = mutableListOf<SafMediaItem>()
-        walkDocumentTree(rootUri = rootUri, documentUri = rootDocumentUri, mediaItems = mediaItems)
-        return mediaItems.sortedByDescending { it.dateTakenMillis ?: 0L }
-    }
+    fun queryMedia(): SafMediaSnapshot = snapshot(configuredRootUri())
 
     fun openMedia(mediaId: String): ParcelFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
@@ -110,6 +104,21 @@ internal class SafMediaCatalog(
             )
     }
 
+    private fun snapshot(rootUri: Uri?): SafMediaSnapshot {
+        if (rootUri == null) {
+            return SafMediaSnapshot(emptyList(), 0L)
+        }
+
+        val rootDocumentUri = resolveRootDocumentUri(rootUri) ?: return SafMediaSnapshot(emptyList(), 0L)
+        val mediaItems = mutableListOf<SafMediaItem>()
+        walkDocumentTree(rootUri = rootUri, documentUri = rootDocumentUri, mediaItems = mediaItems)
+        val sortedItems = mediaItems.sortedByDescending { it.dateTakenMillis ?: 0L }
+        val lastSyncGeneration = sortedItems.maxOfOrNull(SafMediaItem::syncGeneration) ?: 0L
+
+        Log.i(TAG, "Indexed ${sortedItems.size} SAF media items from ${rootUri.authority}")
+        return SafMediaSnapshot(sortedItems, lastSyncGeneration)
+    }
+
     private fun resolveMediaUri(mediaId: String): Uri {
         val documentUri = decodeMediaId(mediaId)
         val configuredRoot = configuredRootUri()
@@ -160,6 +169,7 @@ internal class SafMediaCatalog(
                             displayName = displayName,
                             mimeType = mimeType,
                             dateTakenMillis = lastModified,
+                            syncGeneration = lastModified?.coerceAtLeast(1L) ?: 1L,
                             sizeBytes = sizeBytes,
                         )
                     }
@@ -192,5 +202,11 @@ internal data class SafMediaItem(
     val displayName: String?,
     val mimeType: String,
     val dateTakenMillis: Long?,
+    val syncGeneration: Long,
     val sizeBytes: Long?,
+)
+
+internal data class SafMediaSnapshot(
+    val mediaItems: List<SafMediaItem>,
+    val lastSyncGeneration: Long,
 )

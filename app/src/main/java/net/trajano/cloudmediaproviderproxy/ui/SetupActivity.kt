@@ -29,9 +29,6 @@ class SetupActivity : AppCompatActivity() {
         statusTextView = findViewById(R.id.setup_status)
         applyWindowInsets(findViewById(R.id.setup_container))
 
-        findViewById<Button>(R.id.back_button).setOnClickListener {
-            finish()
-        }
         findViewById<Button>(R.id.pick_root_button).setOnClickListener {
             chooseSafRoot()
         }
@@ -104,6 +101,11 @@ class SetupActivity : AppCompatActivity() {
         val rootUri = rootPreferences.getRootUri()
         if (rootUri == null) {
             statusTextView.text = getString(R.string.setup_status_unconfigured)
+            return
+        }
+
+        if (!rootPreferences.hasPersistedReadPermission(contentResolver)) {
+            statusTextView.text = getString(R.string.setup_status_permission_lost)
             return
         }
 

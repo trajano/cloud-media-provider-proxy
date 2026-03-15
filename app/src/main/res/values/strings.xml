@@ -3,10 +3,10 @@
     <string name="app_name">Cloud Media Provider Proxy</string>
     <string name="setup_title">Cloud media SAF setup</string>
     <string name="setup_body">Pick a Storage Access Framework folder from Nextcloud or another provider. The cloud media provider will index image and video documents from that tree.</string>
-    <string name="back_button">Back</string>
     <string name="pick_root_button">Pick SAF root</string>
     <string name="clear_root_button">Clear SAF root</string>
     <string name="setup_status_unconfigured">No SAF root is configured yet.</string>
+    <string name="setup_status_permission_lost">The saved SAF root is no longer accessible. Pick the Nextcloud folder again to restore access.</string>
     <string name="setup_status_configured">Configured provider: %1$s\nTree: %2$s</string>
     <string name="setup_status_unknown">unknown</string>
 </resources>

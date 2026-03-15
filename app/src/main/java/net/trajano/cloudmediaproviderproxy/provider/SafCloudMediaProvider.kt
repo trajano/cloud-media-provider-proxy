@@ -48,21 +48,23 @@ class SafCloudMediaProvider : CloudMediaProvider() {
             ),
         )
 
-        catalog()?.queryMedia()?.forEach { mediaItem ->
+        val snapshot = catalog()?.queryMedia()
+        snapshot?.mediaItems?.forEach { mediaItem ->
             cursor.addRow(
                 arrayOf<Any?>(
                     mediaItem.mediaId,
-                    mediaItem.documentUri.toString(),
+                    null,
                     mediaItem.mimeType,
                     0,
                     mediaItem.dateTakenMillis,
-                    0L,
+                    mediaItem.syncGeneration,
                     mediaItem.sizeBytes,
                     null,
                     0,
                 ),
             )
         }
+        Log.i(TAG, "onQueryMedia returning ${snapshot?.mediaItems?.size ?: 0} items")
 
         return cursor.withCollectionId(collectionId())
     }
