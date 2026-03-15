@@ -74,6 +74,9 @@ jobs:
           echo "RELEASE_KEY_ALIAS=${ANDROID_KEY_ALIAS}" >> "${GITHUB_ENV}"
           echo "RELEASE_KEY_PASSWORD=${ANDROID_KEY_PASSWORD}" >> "${GITHUB_ENV}"
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
       - name: Build release APK
         run: ./gradlew assembleRelease
 
