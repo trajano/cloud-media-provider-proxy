@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CloudMediaProviderProxy" parent="Theme.AppCompat.DayNight.DarkActionBar">
-        <item name="colorPrimary">@android:color/background_dark</item>
-        <item name="colorPrimaryDark">@android:color/background_dark</item>
-        <item name="colorAccent">@android:color/white</item>
+    <style name="Theme.CloudMediaProviderProxy" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">?attr/colorSurface</item>
     </style>
 </resources>
