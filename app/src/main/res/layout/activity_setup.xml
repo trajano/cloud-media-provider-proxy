@@ -107,6 +107,14 @@
                 android:textAllCaps="false"
                 app:cornerRadius="28dp" />
 
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/show_advanced_switch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:checked="true"
+                android:text="@string/show_advanced_roots_toggle" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/clear_root_button"
                 style="@style/Widget.Material3.Button.OutlinedButton"

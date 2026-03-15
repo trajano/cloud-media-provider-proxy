@@ -7,6 +7,7 @@
     <string name="pick_root_button">Choose folder</string>
     <string name="change_root_button">Change folder</string>
     <string name="clear_root_button">Clear folder</string>
+    <string name="show_advanced_roots_toggle">Show advanced roots in the folder picker</string>
     <string name="setup_status_unconfigured">No folder selected yet.</string>
     <string name="setup_status_permission_lost">This folder is no longer available. Choose it again to keep using this provider.</string>
     <string name="setup_status_configured">App: %1$s\nApp ID: %2$s\nFolder: %3$s\nFolder ID: %4$s</string>

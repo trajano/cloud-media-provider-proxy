@@ -8,8 +8,9 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.view.View
 import android.widget.ImageView
+import android.widget.Switch
 import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -23,14 +24,15 @@ import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 class SetupActivity : AppCompatActivity() {
 
     private val openDocumentTree =
-        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
-            treeUri ?: return@registerForActivityResult
+        registerForActivityResult(StartActivityForResult()) { result ->
+            val treeUri = result.data?.data ?: return@registerForActivityResult
             persistTreePermission(treeUri)
             rootPreferences.saveRootUri(treeUri)
             refreshStatus()
         }
 
     private lateinit var rootPreferences: SafRootPreferences
+    private lateinit var showAdvancedSwitch: Switch
     private lateinit var providerIconView: ImageView
     private lateinit var statusTextView: TextView
     private lateinit var pickRootButton: MaterialButton
@@ -41,6 +43,7 @@ class SetupActivity : AppCompatActivity() {
         setContentView(R.layout.activity_setup)
 
         rootPreferences = SafRootPreferences(this)
+        showAdvancedSwitch = findViewById(R.id.show_advanced_switch)
         providerIconView = findViewById(R.id.setup_provider_icon)
         statusTextView = findViewById(R.id.setup_status)
         pickRootButton = findViewById(R.id.pick_root_button)
@@ -57,12 +60,25 @@ class SetupActivity : AppCompatActivity() {
         clearRootButton.setOnClickListener {
             clearSafRoot()
         }
+        showAdvancedSwitch.isChecked = rootPreferences.showAdvancedRoots()
+        showAdvancedSwitch.setOnCheckedChangeListener { _, isChecked ->
+            rootPreferences.setShowAdvancedRoots(isChecked)
+        }
 
         refreshStatus()
     }
 
     private fun chooseSafRoot() {
-        openDocumentTree.launch(rootPreferences.getRootUri())
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
+            )
+            putExtra("android.content.extra.SHOW_ADVANCED", showAdvancedSwitch.isChecked)
+            rootPreferences.getRootUri()?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+        }
+        openDocumentTree.launch(intent)
     }
 
     private fun clearSafRoot() {
