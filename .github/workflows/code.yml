@@ -2,13 +2,6 @@ name: Validate Code
 
 on:
   pull_request:
-    paths:
-      - "app/**"
-      - "build.gradle"
-      - "settings.gradle"
-      - "gradle.properties"
-      - "gradle/**"
-      - ".github/workflows/code.yml"
 
 permissions:
   contents: read
