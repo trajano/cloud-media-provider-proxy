@@ -11,5 +11,6 @@
     <string name="setup_status_permission_lost">This folder is no longer available. Choose it again to keep using this provider.</string>
     <string name="setup_status_configured">App: %1$s\nApp ID: %2$s\nFolder: %3$s\nFolder ID: %4$s</string>
     <string name="setup_status_unknown">unknown</string>
+    <string name="setup_provider_icon_content_description">%1$s icon</string>
     <string name="setup_back">Back</string>
 </resources>

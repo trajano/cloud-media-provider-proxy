@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.android.material.appbar.MaterialToolbar
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import android.widget.ImageView
 import net.trajano.cloudmediaproviderproxy.R
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,6 +28,15 @@ class SetupActivityTest {
         ActivityScenario.launch(SetupActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
                 assertNotNull(activity.supportActionBar)
+            }
+        }
+    }
+
+    @Test
+    fun setupScreenIncludesProviderIconSlot() {
+        ActivityScenario.launch(SetupActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertNotNull(activity.findViewById<ImageView>(R.id.setup_provider_icon))
             }
         }
     }
