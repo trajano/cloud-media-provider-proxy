@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.view.View
 import android.widget.ImageView
-import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.appcompat.app.AppCompatActivity
@@ -18,6 +17,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
 import net.trajano.cloudmediaproviderproxy.R
 import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 
@@ -32,7 +32,7 @@ class SetupActivity : AppCompatActivity() {
         }
 
     private lateinit var rootPreferences: SafRootPreferences
-    private lateinit var showAdvancedSwitch: Switch
+    private lateinit var showAdvancedSwitch: MaterialSwitch
     private lateinit var providerIconView: ImageView
     private lateinit var statusTextView: TextView
     private lateinit var pickRootButton: MaterialButton
