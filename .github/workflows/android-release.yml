@@ -111,7 +111,11 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${{ needs.changelog.outputs.tag }}"
+          if git rev-parse "${{ needs.changelog.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ needs.changelog.outputs.tag }} already exists"
+          else
+            git tag "${{ needs.changelog.outputs.tag }}"
+          fi
 
       - name: Build release APK
         run: ./gradlew assembleRelease
