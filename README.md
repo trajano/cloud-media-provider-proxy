@@ -7,12 +7,13 @@ The main objective is to allow Nextcloud to be a source for full-screen contact 
 This project is licensed under the Eclipse Public License 2.0. See [LICENSE](/P:/cloud-media-provider-proxy/LICENSE).
 
 ## Versioning and releases
-This project uses SemVer tags as the release source of truth.
+This project uses SemVer releases derived from conventional commits on `master`.
 
-- Create a tag in the form `vMAJOR.MINOR.PATCH`, for example `v0.2.0`.
-- GitHub Actions derives `versionName` from the tag without the leading `v`.
+- Merge conventional commits into `master`, for example `feat:`, `fix:`, and `feat!:` or `BREAKING CHANGE:`.
+- The release workflow calculates the next SemVer version, tags `HEAD` as `vMAJOR.MINOR.PATCH`, builds the signed release APK, and publishes the GitHub release.
+- `versionName` is derived from the release version without the leading `v`.
 - `versionCode` is derived as `MAJOR * 10000 + MINOR * 100 + PATCH`.
-- Pushing a SemVer tag builds the release APK and uploads it to the corresponding GitHub release.
+- If there are no releasable conventional commits since the previous tag, the workflow skips the release.
 
 The release workflow can also sign the APK when these repository secrets are configured:
 
@@ -21,7 +22,7 @@ The release workflow can also sign the APK when these repository secrets are con
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-Without those secrets, the workflow still builds and uploads an unsigned release APK.
+The manual `workflow_dispatch` trigger is still available, but the normal path is a push to `master`.
 
 ## Current app identity
 The current scaffold uses these identifiers:
