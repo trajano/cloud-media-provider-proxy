@@ -9,6 +9,7 @@ import android.provider.DocumentsContract
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -20,6 +21,14 @@ import net.trajano.cloudmediaproviderproxy.R
 import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 
 class SetupActivity : AppCompatActivity() {
+
+    private val openDocumentTree =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+            treeUri ?: return@registerForActivityResult
+            persistTreePermission(treeUri)
+            rootPreferences.saveRootUri(treeUri)
+            refreshStatus()
+        }
 
     private lateinit var rootPreferences: SafRootPreferences
     private lateinit var providerIconView: ImageView
@@ -52,30 +61,8 @@ class SetupActivity : AppCompatActivity() {
         refreshStatus()
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode != REQUEST_OPEN_DOCUMENT_TREE || resultCode != RESULT_OK) {
-            return
-        }
-
-        val treeUri = data?.data ?: return
-        persistTreePermission(treeUri, data.flags)
-        rootPreferences.saveRootUri(treeUri)
-        refreshStatus()
-    }
-
     private fun chooseSafRoot() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(
-                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
-            )
-            putExtra("android.content.extra.SHOW_ADVANCED", true)
-        }
-        startActivityForResult(intent, REQUEST_OPEN_DOCUMENT_TREE)
+        openDocumentTree.launch(rootPreferences.getRootUri())
     }
 
     private fun clearSafRoot() {
@@ -91,13 +78,10 @@ class SetupActivity : AppCompatActivity() {
         refreshStatus()
     }
 
-    private fun persistTreePermission(treeUri: Uri, flags: Int) {
-        val persistableFlags =
-            flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-
+    private fun persistTreePermission(treeUri: Uri) {
         contentResolver.takePersistableUriPermission(
             treeUri,
-            persistableFlags or Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION,
         )
     }
 
@@ -196,9 +180,5 @@ class SetupActivity : AppCompatActivity() {
             insets
         }
         ViewCompat.requestApplyInsets(container)
-    }
-
-    companion object {
-        private const val REQUEST_OPEN_DOCUMENT_TREE = 1001
     }
 }
