@@ -2,9 +2,11 @@ package net.trajano.cloudmediaproviderproxy.ui
 
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.appbar.MaterialToolbar
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import android.widget.ImageView
 import net.trajano.cloudmediaproviderproxy.R
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,6 +29,24 @@ class SetupActivityTest {
         ActivityScenario.launch(SetupActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
                 assertNotNull(activity.supportActionBar)
+            }
+        }
+    }
+
+    @Test
+    fun setupScreenIncludesProviderIconSlot() {
+        ActivityScenario.launch(SetupActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertNotNull(activity.findViewById<ImageView>(R.id.setup_provider_icon))
+            }
+        }
+    }
+
+    @Test
+    fun setupScreenIncludesShowAdvancedRootsToggle() {
+        ActivityScenario.launch(SetupActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertNotNull(activity.findViewById<MaterialSwitch>(R.id.show_advanced_switch))
             }
         }
     }

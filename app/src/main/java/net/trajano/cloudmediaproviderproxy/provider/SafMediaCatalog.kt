@@ -29,7 +29,13 @@ internal class SafMediaCatalog(
         return Bundle().apply {
             putString(KEY_MEDIA_COLLECTION_ID, mediaCollectionId(rootUri))
             putLong(KEY_LAST_MEDIA_SYNC_GENERATION, snapshot.lastSyncGeneration)
-            putString(KEY_ACCOUNT_NAME, rootUri?.authority ?: "Not configured")
+            putString(
+                KEY_ACCOUNT_NAME,
+                accountNameForDisplay(
+                    authority = rootUri?.authority,
+                    providerLabel = rootUri?.authority?.let(::resolveProviderLabel),
+                ),
+            )
             putParcelable(
                 KEY_ACCOUNT_CONFIGURATION_INTENT,
                 Intent(context, SetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -71,6 +77,11 @@ internal class SafMediaCatalog(
             return null
         }
         return rootUri
+    }
+
+    private fun resolveProviderLabel(authority: String): String? {
+        val providerInfo = context.packageManager.resolveContentProvider(authority, 0) ?: return null
+        return providerInfo.loadLabel(context.packageManager)?.toString()?.trim()
     }
 
     companion object {
@@ -210,3 +221,17 @@ internal data class SafMediaSnapshot(
     val mediaItems: List<SafMediaItem>,
     val lastSyncGeneration: Long,
 )
+
+internal fun accountNameForDisplay(authority: String?, providerLabel: String?): String {
+    val trimmedLabel = providerLabel?.trim().orEmpty()
+    if (trimmedLabel.isNotEmpty()) {
+        return trimmedLabel
+    }
+
+    val trimmedAuthority = authority?.trim().orEmpty()
+    if (trimmedAuthority.isNotEmpty()) {
+        return trimmedAuthority
+    }
+
+    return "Not configured"
+}

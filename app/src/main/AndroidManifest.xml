@@ -20,11 +20,6 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".service.ProxyBridgeService"
-            android:enabled="true"
-            android:exported="false" />
-
         <provider
             android:name=".provider.SafCloudMediaProvider"
             android:authorities="${applicationId}.cloud"

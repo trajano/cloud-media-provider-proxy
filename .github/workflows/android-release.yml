@@ -46,6 +46,36 @@ jobs:
           skip-on-empty: "true"
           tag-prefix: "v"
 
+      - name: Fail on unreleasable release-path changes
+        if: ${{ steps.changelog.outputs.skipped == 'true' }}
+        shell: bash
+        run: |
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [[ -n "${LAST_TAG}" ]]; then
+            RANGE="${LAST_TAG}..HEAD"
+          else
+            ROOT_COMMIT="$(git rev-list --max-parents=0 HEAD | tail -n 1)"
+            RANGE="${ROOT_COMMIT}..HEAD"
+          fi
+
+          mapfile -t CHANGED_FILES < <(git diff --name-only "${RANGE}")
+          mapfile -t RELEASE_FILES < <(
+            printf '%s\n' "${CHANGED_FILES[@]}" | grep -E '^(app/|build\.gradle$|settings\.gradle$|gradle\.properties$|gradle/|\.github/workflows/android-release\.yml$)' || true
+          )
+
+          if [[ ${#RELEASE_FILES[@]} -eq 0 ]]; then
+            echo "No releasable files changed since ${LAST_TAG:-repository start}; skipping release."
+            exit 0
+          fi
+
+          echo "Release-path changes were pushed, but no releasable conventional commit was found since ${LAST_TAG:-repository start}." >&2
+          echo "Use a conventional commit subject such as feat:, fix:, perf:, refactor:, or a BREAKING CHANGE footer." >&2
+          echo "Changed files:" >&2
+          printf ' - %s\n' "${RELEASE_FILES[@]}" >&2
+          echo "Commits in range:" >&2
+          git log --format=' - %h %s' "${RANGE}" >&2
+          exit 1
+
   release:
     needs: changelog
     if: ${{ needs.changelog.outputs.skipped == 'false' }}
