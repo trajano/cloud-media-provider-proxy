@@ -50,4 +50,4 @@ After the folder is configured and the package is appended to DeviceConfig, the 
 
 ## Developer notes
 
-Developer and release details live in [docs/development.md](/P:/cloud-media-provider-proxy/docs/development.md).
+Developer and release details live in [docs/development.md](docs/development.md).
