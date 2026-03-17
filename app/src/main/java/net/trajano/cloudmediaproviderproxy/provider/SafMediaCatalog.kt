@@ -8,6 +8,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
+import android.os.OperationCanceledException
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.util.Base64
@@ -17,6 +18,10 @@ import net.trajano.cloudmediaproviderproxy.ui.SetupActivity
 import java.io.FileOutputStream
 import java.io.FileNotFoundException
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import androidx.core.net.toUri
 
 internal class SafMediaCatalog(
     private val context: Context,
@@ -24,6 +29,7 @@ internal class SafMediaCatalog(
     private val previewFileStore: PreviewFileStore = PreviewFileStore(
         SafMediaCacheStore.previewDirectory(context),
     ),
+    private val previewRefreshExecutor: ExecutorService = PREVIEW_REFRESH_EXECUTOR,
 ) {
 
     fun buildCollectionInfo(
@@ -51,9 +57,9 @@ internal class SafMediaCatalog(
 
     fun queryMedia(): SafMediaSnapshot = snapshot(configuredRootUri())
 
-    fun openMedia(mediaId: String): ParcelFileDescriptor {
+    fun openMedia(mediaId: String, signal: CancellationSignal?): ParcelFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
-        return context.contentResolver.openFileDescriptor(documentUri, "r")
+        return context.contentResolver.openFileDescriptor(documentUri, "r", signal)
             ?: throw FileNotFoundException("Unable to open $documentUri")
     }
 
@@ -63,15 +69,13 @@ internal class SafMediaCatalog(
         signal: CancellationSignal?,
     ): AssetFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
-        val previewFile = previewFileStore.fileFor(mediaId, syncGeneration) { targetFile ->
-            loadPreviewAssetFileDescriptor(documentUri, signal).use { descriptor ->
-                descriptor.createInputStream().use { inputStream ->
-                    FileOutputStream(targetFile).use { outputStream ->
-                        inputStream.copyTo(outputStream)
-                    }
-                }
+        val previewFile = previewFileStore.cachedFileFor(mediaId, syncGeneration)
+            ?: previewFileStore.latestCachedFileFor(mediaId)?.also {
+                refreshPreviewAsync(mediaId, syncGeneration, documentUri)
             }
-        }
+            ?: previewFileStore.fileFor(mediaId, syncGeneration) { targetFile ->
+                copyPreviewToFile(documentUri, signal, targetFile)
+            }
 
         val parcelFileDescriptor = ParcelFileDescriptor.open(
             previewFile,
@@ -93,6 +97,44 @@ internal class SafMediaCatalog(
         return providerInfo.loadLabel(context.packageManager)?.toString()?.trim()
     }
 
+    private fun refreshPreviewAsync(
+        mediaId: String,
+        syncGeneration: Long,
+        documentUri: Uri,
+    ) {
+        val refreshKey = "$mediaId:$syncGeneration"
+        if (ACTIVE_PREVIEW_REFRESHES.putIfAbsent(refreshKey, true) != null) {
+            return
+        }
+
+        previewRefreshExecutor.execute {
+            try {
+                previewFileStore.fileFor(mediaId, syncGeneration) { targetFile ->
+                    copyPreviewToFile(documentUri, signal = null, targetFile = targetFile)
+                }
+                Log.i(TAG, "Refreshed preview cache for mediaId=$mediaId generation=$syncGeneration")
+            } catch (error: Exception) {
+                Log.w(TAG, "Failed to refresh preview cache for mediaId=$mediaId generation=$syncGeneration", error)
+            } finally {
+                ACTIVE_PREVIEW_REFRESHES.remove(refreshKey)
+            }
+        }
+    }
+
+    private fun copyPreviewToFile(
+        documentUri: Uri,
+        signal: CancellationSignal?,
+        targetFile: java.io.File,
+    ) {
+        loadPreviewAssetFileDescriptor(documentUri, signal).use { descriptor ->
+            descriptor.createInputStream().use { inputStream ->
+                FileOutputStream(targetFile).use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+        }
+    }
+
     private fun loadPreviewAssetFileDescriptor(
         documentUri: Uri,
         signal: CancellationSignal?,
@@ -101,24 +143,29 @@ internal class SafMediaCatalog(
             putParcelable(ContentResolver.EXTRA_SIZE, android.graphics.Point(512, 512))
         }
 
-        runCatching {
-            context.contentResolver.openTypedAssetFileDescriptor(
+        try {
+            return context.contentResolver.openTypedAssetFileDescriptor(
                 documentUri,
                 "image/*",
                 options,
                 signal,
-            )
-        }.onFailure { error ->
-            Log.w(TAG, "Typed preview load failed for $documentUri; falling back to direct asset", error)
-        }.getOrNull()?.let { return it }
+            ) ?: throw FileNotFoundException("Unable to open typed preview for $documentUri")
+        } catch (e: OperationCanceledException) {
+            throw e
+        } catch (e: FileNotFoundException) {
+            Log.w(TAG, "Typed preview load failed for $documentUri; falling back to direct asset", e)
+        }
+        signal?.throwIfCanceled()
 
-        return context.contentResolver.openAssetFileDescriptor(documentUri, "r")
+        return context.contentResolver.openAssetFileDescriptor(documentUri, "r", signal)
             ?: throw FileNotFoundException("Unable to open preview for $documentUri")
     }
 
     companion object {
         private const val TAG = "SafMediaCatalog"
         private const val DIRECTORY_MIME_TYPE = DocumentsContract.Document.MIME_TYPE_DIR
+        private val PREVIEW_REFRESH_EXECUTOR: ExecutorService = Executors.newSingleThreadExecutor()
+        private val ACTIVE_PREVIEW_REFRESHES = ConcurrentHashMap<String, Boolean>()
 
         private const val KEY_MEDIA_COLLECTION_ID =
             android.provider.CloudMediaProviderContract.MediaCollectionInfo.MEDIA_COLLECTION_ID
@@ -139,12 +186,10 @@ internal class SafMediaCatalog(
             )
 
         fun decodeMediaId(mediaId: String): Uri =
-            Uri.parse(
-                String(
-                    Base64.decode(mediaId, Base64.NO_WRAP or Base64.URL_SAFE),
-                    StandardCharsets.UTF_8,
-                ),
-            )
+            String(
+                Base64.decode(mediaId, Base64.NO_WRAP or Base64.URL_SAFE),
+                StandardCharsets.UTF_8,
+            ).toUri()
     }
 
     private fun snapshot(rootUri: Uri?): SafMediaSnapshot {

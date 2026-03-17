@@ -114,7 +114,7 @@ class SafCloudMediaProvider : CloudMediaProvider() {
         mediaId: String,
         extras: Bundle?,
         signal: CancellationSignal?,
-    ): ParcelFileDescriptor = catalog()?.openMedia(mediaId)
+    ): ParcelFileDescriptor = catalog()?.openMedia(mediaId, signal)
         ?: throw FileNotFoundException("Media opening is unavailable without a provider context")
 
     override fun onOpenPreview(

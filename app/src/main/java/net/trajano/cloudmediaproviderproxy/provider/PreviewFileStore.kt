@@ -8,15 +8,34 @@ internal class PreviewFileStore(
     private val previewDirectory: File,
 ) {
 
+    fun cachedFileFor(
+        mediaId: String,
+        syncGeneration: Long,
+    ): File? {
+        val targetFile = File(previewDirectory, "${cacheKey(mediaId)}-$syncGeneration.preview")
+        return targetFile.takeIf { it.isFile && it.length() > 0L }
+    }
+
+    fun latestCachedFileFor(mediaId: String): File? {
+        val cacheKey = cacheKey(mediaId)
+        return previewDirectory.listFiles { file ->
+            file.name.startsWith("$cacheKey-") && file.name.endsWith(".preview") && file.length() > 0L
+        }?.maxByOrNull(::generationForFile)
+    }
+
     @Synchronized
     fun fileFor(
         mediaId: String,
         syncGeneration: Long,
         writer: (File) -> Unit,
     ): File {
+        cachedFileFor(mediaId, syncGeneration)?.let {
+            return it
+        }
+
         val cacheKey = cacheKey(mediaId)
         val targetFile = File(previewDirectory, "$cacheKey-$syncGeneration.preview")
-        if (targetFile.isFile() && targetFile.length() > 0L) {
+        if (targetFile.isFile && targetFile.length() > 0L) {
             return targetFile
         }
 
@@ -58,5 +77,12 @@ internal class PreviewFileStore(
             MessageDigest.getInstance("SHA-256")
                 .digest(mediaId.toByteArray(Charsets.UTF_8))
                 .joinToString("") { byte -> "%02x".format(byte) }
+
+        private fun generationForFile(file: File): Long =
+            file.name
+                .substringAfterLast('-')
+                .substringBefore(".preview")
+                .toLongOrNull()
+                ?: Long.MIN_VALUE
     }
 }

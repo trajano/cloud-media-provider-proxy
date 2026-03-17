@@ -47,4 +47,19 @@ class PreviewFileStoreTest {
         assertTrue(newFile.exists())
         assertEquals("new", newFile.readText())
     }
+
+    @Test
+    fun latestCachedFileReturnsNewestGeneration() {
+        val previewDirectory = Files.createTempDirectory("preview-store-test").toFile()
+        val store = PreviewFileStore(previewDirectory)
+
+        store.fileFor("media-id", 10L) { target ->
+            target.writeText("old")
+        }
+        val newestFile = store.fileFor("media-id", 11L) { target ->
+            target.writeText("new")
+        }
+
+        assertEquals(newestFile.absolutePath, store.latestCachedFileFor("media-id")?.absolutePath)
+    }
 }
