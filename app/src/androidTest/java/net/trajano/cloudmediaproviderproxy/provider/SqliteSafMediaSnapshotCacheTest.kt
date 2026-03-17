@@ -42,7 +42,6 @@ class SqliteSafMediaSnapshotCacheTest {
         snapshotRef.set(snapshot(mediaItem("kept", 10L)))
         clock.set(1L)
 
-        cache.currentStateSnapshot()
         val refreshedState = cache.currentStateSnapshot()
 
         assertEquals(12L, refreshedState.lastSyncGeneration)
