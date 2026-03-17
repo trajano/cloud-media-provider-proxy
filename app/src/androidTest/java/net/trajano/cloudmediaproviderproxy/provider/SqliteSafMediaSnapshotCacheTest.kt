@@ -42,10 +42,10 @@ class SqliteSafMediaSnapshotCacheTest {
         snapshotRef.set(snapshot(mediaItem("kept", 10L)))
         clock.set(1L)
 
-        val refreshedState = cache.currentStateSnapshot()
+        val staleState = cache.currentStateSnapshot()
 
-        assertEquals(12L, refreshedState.lastSyncGeneration)
-        assertEquals(listOf("removed"), refreshedState.deletedMedia.map(DeletedMedia::mediaId))
+        assertEquals(11L, staleState.lastSyncGeneration)
+        assertTrue(staleState.deletedMedia.isEmpty())
 
         val persistedCache = SqliteSafMediaSnapshotCache(
             context = context,
