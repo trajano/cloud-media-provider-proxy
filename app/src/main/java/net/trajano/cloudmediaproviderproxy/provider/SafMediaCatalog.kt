@@ -70,16 +70,23 @@ internal class SafMediaCatalog(
         signal: CancellationSignal?,
     ): AssetFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
-        val previewFile = previewFileStore.cachedFileFor(mediaId, syncGeneration)
-            ?: previewFileStore.latestCachedFileFor(mediaId)?.also {
+        val exactPreviewFile = previewFileStore.cachedFileFor(mediaId, syncGeneration)
+        val stalePreviewFile = if (exactPreviewFile == null) {
+            previewFileStore.latestCachedFileFor(mediaId)?.also {
                 refreshPreviewAsync(mediaId, syncGeneration, documentUri)
             }
-            ?: previewFileStore.fileFor(mediaId, syncGeneration) { targetFile ->
-                copyPreviewToFile(documentUri, signal, targetFile)
-            }
+        } else {
+            null
+        }
+        val resolvedPreviewFile = exactPreviewFile ?: stalePreviewFile ?: previewFileStore.fileFor(
+            mediaId,
+            syncGeneration,
+        ) { targetFile ->
+            copyPreviewToFile(documentUri, signal, targetFile)
+        }
 
         val parcelFileDescriptor = ParcelFileDescriptor.open(
-            previewFile,
+            resolvedPreviewFile,
             ParcelFileDescriptor.MODE_READ_ONLY,
         )
         return AssetFileDescriptor(parcelFileDescriptor, 0L, AssetFileDescriptor.UNKNOWN_LENGTH)
