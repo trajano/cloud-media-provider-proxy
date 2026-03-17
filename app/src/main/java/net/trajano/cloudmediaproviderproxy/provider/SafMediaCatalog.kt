@@ -59,6 +59,7 @@ internal class SafMediaCatalog(
 
     fun openMedia(mediaId: String, signal: CancellationSignal?): ParcelFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
+        Log.i(TAG, "Opening media mediaId=$mediaId documentUri=$documentUri")
         return context.contentResolver.openFileDescriptor(documentUri, "r", signal)
             ?: throw FileNotFoundException("Unable to open $documentUri")
     }
