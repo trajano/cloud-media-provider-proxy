@@ -14,21 +14,27 @@ import android.util.Base64
 import android.util.Log
 import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 import net.trajano.cloudmediaproviderproxy.ui.SetupActivity
+import java.io.FileOutputStream
 import java.io.FileNotFoundException
 import java.nio.charset.StandardCharsets
 
 internal class SafMediaCatalog(
     private val context: Context,
     private val rootPreferences: SafRootPreferences = SafRootPreferences(context),
+    private val previewFileStore: PreviewFileStore = PreviewFileStore(
+        SafMediaCacheStore.previewDirectory(context),
+    ),
 ) {
 
-    fun buildCollectionInfo(): Bundle {
+    fun buildCollectionInfo(
+        snapshot: SafMediaSnapshot = queryMedia(),
+        lastSyncGeneration: Long = snapshot.lastSyncGeneration,
+    ): Bundle {
         val rootUri = configuredRootUri()
-        val snapshot = snapshot(rootUri)
 
         return Bundle().apply {
             putString(KEY_MEDIA_COLLECTION_ID, mediaCollectionId(rootUri))
-            putLong(KEY_LAST_MEDIA_SYNC_GENERATION, snapshot.lastSyncGeneration)
+            putLong(KEY_LAST_MEDIA_SYNC_GENERATION, lastSyncGeneration)
             putString(
                 KEY_ACCOUNT_NAME,
                 accountNameForDisplay(
@@ -53,22 +59,25 @@ internal class SafMediaCatalog(
 
     fun openPreview(
         mediaId: String,
+        syncGeneration: Long,
         signal: CancellationSignal?,
     ): AssetFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
-        val options = Bundle().apply {
-            putParcelable(ContentResolver.EXTRA_SIZE, android.graphics.Point(512, 512))
+        val previewFile = previewFileStore.fileFor(mediaId, syncGeneration) { targetFile ->
+            loadPreviewAssetFileDescriptor(documentUri, signal).use { descriptor ->
+                descriptor.createInputStream().use { inputStream ->
+                    FileOutputStream(targetFile).use { outputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                }
+            }
         }
 
-        context.contentResolver.openTypedAssetFileDescriptor(
-            documentUri,
-            "image/*",
-            options,
-            signal,
-        )?.let { return it }
-
-        return context.contentResolver.openAssetFileDescriptor(documentUri, "r")
-            ?: throw FileNotFoundException("Unable to open preview for $documentUri")
+        val parcelFileDescriptor = ParcelFileDescriptor.open(
+            previewFile,
+            ParcelFileDescriptor.MODE_READ_ONLY,
+        )
+        return AssetFileDescriptor(parcelFileDescriptor, 0L, AssetFileDescriptor.UNKNOWN_LENGTH)
     }
 
     fun configuredRootUri(): Uri? {
@@ -82,6 +91,29 @@ internal class SafMediaCatalog(
     private fun resolveProviderLabel(authority: String): String? {
         val providerInfo = context.packageManager.resolveContentProvider(authority, 0) ?: return null
         return providerInfo.loadLabel(context.packageManager)?.toString()?.trim()
+    }
+
+    private fun loadPreviewAssetFileDescriptor(
+        documentUri: Uri,
+        signal: CancellationSignal?,
+    ): AssetFileDescriptor {
+        val options = Bundle().apply {
+            putParcelable(ContentResolver.EXTRA_SIZE, android.graphics.Point(512, 512))
+        }
+
+        runCatching {
+            context.contentResolver.openTypedAssetFileDescriptor(
+                documentUri,
+                "image/*",
+                options,
+                signal,
+            )
+        }.onFailure { error ->
+            Log.w(TAG, "Typed preview load failed for $documentUri; falling back to direct asset", error)
+        }.getOrNull()?.let { return it }
+
+        return context.contentResolver.openAssetFileDescriptor(documentUri, "r")
+            ?: throw FileNotFoundException("Unable to open preview for $documentUri")
     }
 
     companion object {

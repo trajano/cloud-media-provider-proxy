@@ -1,5 +1,6 @@
 package net.trajano.cloudmediaproviderproxy.provider
 
+import android.content.ContentResolver
 import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.database.MatrixCursor
@@ -19,7 +20,13 @@ class SafCloudMediaProvider : CloudMediaProvider() {
         return true
     }
 
-    override fun onGetMediaCollectionInfo(extras: Bundle): Bundle = catalog()?.buildCollectionInfo()
+    override fun onGetMediaCollectionInfo(extras: Bundle): Bundle = cache()?.let { cache ->
+        val state = cache.currentStateSnapshot()
+        catalog()?.buildCollectionInfo(
+            snapshot = state.current,
+            lastSyncGeneration = state.lastSyncGeneration,
+        )
+    }
         ?: Bundle().apply {
             putString(
                 CloudMediaProviderContract.MediaCollectionInfo.MEDIA_COLLECTION_ID,
@@ -34,6 +41,7 @@ class SafCloudMediaProvider : CloudMediaProvider() {
 
     override fun onQueryMedia(extras: Bundle): Cursor {
         Log.i(TAG, "onQueryMedia called with extras=$extras")
+        val requestedSyncGeneration = extras.getLong(CloudMediaProviderContract.EXTRA_SYNC_GENERATION, 0L)
         val cursor = MatrixCursor(
             arrayOf(
                 CloudMediaProviderContract.MediaColumns.ID,
@@ -48,8 +56,11 @@ class SafCloudMediaProvider : CloudMediaProvider() {
             ),
         )
 
-        val snapshot = catalog()?.queryMedia()
-        snapshot?.mediaItems?.forEach { mediaItem ->
+        val state = cache()?.currentStateSnapshot()
+        state?.current?.mediaItems
+            ?.asSequence()
+            ?.filter { mediaItem -> mediaItem.syncGeneration > requestedSyncGeneration }
+            ?.forEach { mediaItem ->
             cursor.addRow(
                 arrayOf<Any?>(
                     mediaItem.mediaId,
@@ -64,14 +75,28 @@ class SafCloudMediaProvider : CloudMediaProvider() {
                 ),
             )
         }
-        Log.i(TAG, "onQueryMedia returning ${snapshot?.mediaItems?.size ?: 0} items")
+        Log.i(TAG, "onQueryMedia returning ${cursor.count} items")
 
-        return cursor.withCollectionId(collectionId())
+        return cursor.withCollectionId(
+            collectionId = collectionId(),
+            honoredSyncGeneration = requestedSyncGeneration,
+        )
     }
 
     override fun onQueryDeletedMedia(extras: Bundle): Cursor {
         Log.i(TAG, "onQueryDeletedMedia called with extras=$extras")
-        return emptyCursorWithCollectionId(CloudMediaProviderContract.MediaColumns.ID)
+        val requestedSyncGeneration = extras.getLong(CloudMediaProviderContract.EXTRA_SYNC_GENERATION, 0L)
+        val cursor = MatrixCursor(arrayOf(CloudMediaProviderContract.MediaColumns.ID))
+        cache()?.deletedMedia()
+            ?.asSequence()
+            ?.filter { deletedMedia -> deletedMedia.syncGeneration > requestedSyncGeneration }
+            ?.forEach { deletedMedia ->
+                cursor.addRow(arrayOf(deletedMedia.mediaId))
+        }
+        return cursor.withCollectionId(
+            collectionId = collectionId(),
+            honoredSyncGeneration = requestedSyncGeneration,
+        )
     }
 
     override fun onQueryAlbums(extras: Bundle): Cursor {
@@ -97,16 +122,34 @@ class SafCloudMediaProvider : CloudMediaProvider() {
         size: Point,
         extras: Bundle?,
         signal: CancellationSignal?,
-    ): AssetFileDescriptor = catalog()?.openPreview(mediaId, signal)
-        ?: throw FileNotFoundException("Preview opening is unavailable without a provider context")
+    ): AssetFileDescriptor {
+        val catalog = catalog()
+            ?: throw FileNotFoundException("Preview opening is unavailable without a provider context")
+        val syncGeneration = cache()?.currentStateSnapshot()
+            ?.current
+            ?.mediaItems
+            ?.firstOrNull { mediaItem -> mediaItem.mediaId == mediaId }
+            ?.syncGeneration
+            ?: 0L
+        return catalog.openPreview(mediaId, syncGeneration, signal)
+    }
 
     private fun emptyCursorWithCollectionId(vararg columns: String): Cursor =
         MatrixCursor(columns).withCollectionId(collectionId())
 
-    private fun MatrixCursor.withCollectionId(collectionId: String): MatrixCursor =
+    private fun MatrixCursor.withCollectionId(
+        collectionId: String,
+        honoredSyncGeneration: Long? = null,
+    ): MatrixCursor =
         apply {
             extras = Bundle().apply {
                 putString(CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID, collectionId)
+                honoredSyncGeneration?.let {
+                    putStringArray(
+                        ContentResolver.EXTRA_HONORED_ARGS,
+                        arrayOf(CloudMediaProviderContract.EXTRA_SYNC_GENERATION),
+                    )
+                }
             }
         }
 
@@ -114,6 +157,13 @@ class SafCloudMediaProvider : CloudMediaProvider() {
         ?: MEDIA_COLLECTION_ID
 
     private fun catalog(): SafMediaCatalog? = context?.let(::SafMediaCatalog)
+
+    private fun cache(): SafMediaSnapshotCache? {
+        val context = context ?: return null
+        val catalog = catalog() ?: return null
+        val cacheKey = catalog.configuredRootUri()?.toString() ?: MEDIA_COLLECTION_ID
+        return SafMediaCacheStore.cacheFor(context, cacheKey, catalog::queryMedia)
+    }
 
     private companion object {
         private const val TAG = "SafCloudMediaProvider"
