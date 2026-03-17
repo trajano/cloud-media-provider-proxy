@@ -44,20 +44,18 @@ internal class PreviewFileStore(
         }
 
         val tempFile = File(previewDirectory, "$cacheKey-$syncGeneration.tmp")
-        if (tempFile.exists()) {
-            tempFile.delete()
-        }
+        deleteIfExists(tempFile)
 
         runCatching {
             writer(tempFile)
             if (!tempFile.renameTo(targetFile)) {
                 tempFile.copyTo(targetFile, overwrite = true)
-                tempFile.delete()
+                deleteIfExists(tempFile)
             }
             deleteOlderGenerations(cacheKey, targetFile)
         }.onFailure {
-            tempFile.delete()
-            targetFile.delete()
+            deleteIfExists(tempFile)
+            deleteIfExists(targetFile)
         }.getOrThrow()
 
         return targetFile
@@ -69,7 +67,13 @@ internal class PreviewFileStore(
     ) {
         previewDirectory.listFiles { file ->
             file.name.startsWith("$cacheKey-") && file.absolutePath != keepFile.absolutePath
-        }?.forEach(File::delete)
+        }?.forEach(::deleteIfExists)
+    }
+
+    private fun deleteIfExists(file: File) {
+        if (file.exists() && !file.delete()) {
+            throw IOException("Unable to delete preview cache file $file")
+        }
     }
 
     companion object {
