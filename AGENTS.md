@@ -8,6 +8,10 @@
 - Treat the release workflow as SemVer-driven from conventional commits on `master`.
 - Expect the release workflow to fail if release-path changes reach `master` without a releasable conventional commit.
 
+## Testing
+
+- if there is an attached device in `adb` then enable the provider (and disable Google Photo provider) by calling `adb shell device_config put mediaprovider allowed_cloud_providers $merged`
+- if there is an attached device in `adb` then also perform `./gradlew installDebug`
 ## Definition of done
 
 - Before pushing to a pull request branch, assemble the APK locally with `.\gradlew.bat :app:assembleDebug`.

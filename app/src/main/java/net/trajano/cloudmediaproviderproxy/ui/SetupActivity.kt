@@ -6,6 +6,7 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.util.Log
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
@@ -20,12 +21,20 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import net.trajano.cloudmediaproviderproxy.R
 import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
+import net.trajano.cloudmediaproviderproxy.provider.SafMediaCacheStore
 
 class SetupActivity : AppCompatActivity() {
 
     private val openDocumentTree =
         registerForActivityResult(StartActivityForResult()) { result ->
             val treeUri = result.data?.data ?: return@registerForActivityResult
+            val previousRootUri = rootPreferences.getRootUri()
+            if (treeUri != previousRootUri) {
+                Log.i(TAG, "SAF root changed; clearing caches. previous=$previousRootUri new=$treeUri")
+                SafMediaCacheStore.clearAll(this)
+            } else {
+                Log.i(TAG, "SAF root unchanged; skipping cache clear for $treeUri")
+            }
             persistTreePermission(treeUri)
             rootPreferences.saveRootUri(treeUri)
             refreshStatus()
@@ -82,6 +91,7 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun clearSafRoot() {
+        Log.i(TAG, "Clearing SAF root and associated caches")
         rootPreferences.getRootUri()?.let { rootUri ->
             runCatching {
                 contentResolver.releasePersistableUriPermission(
@@ -90,6 +100,7 @@ class SetupActivity : AppCompatActivity() {
                 )
             }
         }
+        SafMediaCacheStore.clearAll(this)
         rootPreferences.clearRootUri()
         refreshStatus()
     }
@@ -196,5 +207,9 @@ class SetupActivity : AppCompatActivity() {
             insets
         }
         ViewCompat.requestApplyInsets(container)
+    }
+
+    private companion object {
+        private const val TAG = "SetupActivity"
     }
 }
