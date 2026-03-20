@@ -172,6 +172,7 @@ internal class SafMediaCatalog(
     companion object {
         private const val TAG = "SafMediaCatalog"
         private const val DIRECTORY_MIME_TYPE = DocumentsContract.Document.MIME_TYPE_DIR
+        private const val MAX_INDEXED_IMAGE_SIZE_BYTES = 10L * 1024L * 1024L
         private val PREVIEW_REFRESH_EXECUTOR: ExecutorService = Executors.newSingleThreadExecutor()
         private val ACTIVE_PREVIEW_REFRESHES = ConcurrentHashMap<String, Boolean>()
 
@@ -198,6 +199,15 @@ internal class SafMediaCatalog(
                 Base64.decode(mediaId, Base64.NO_WRAP or Base64.URL_SAFE),
                 StandardCharsets.UTF_8,
             ).toUri()
+
+        internal fun shouldIndexMedia(
+            mimeType: String,
+            sizeBytes: Long?,
+        ): Boolean = when {
+            mimeType.startsWith("video/") -> true
+            mimeType.startsWith("image/") -> sizeBytes == null || sizeBytes <= MAX_INDEXED_IMAGE_SIZE_BYTES
+            else -> false
+        }
     }
 
     private fun snapshot(rootUri: Uri?): SafMediaSnapshot {
@@ -258,7 +268,7 @@ internal class SafMediaCatalog(
 
                 when {
                     mimeType == DIRECTORY_MIME_TYPE -> walkDocumentTree(rootUri, childDocumentUri, mediaItems)
-                    mimeType.startsWith("image/") || mimeType.startsWith("video/") -> {
+                    shouldIndexMedia(mimeType, sizeBytes) -> {
                         mediaItems += SafMediaItem(
                             mediaId = mediaId(childDocumentUri),
                             documentUri = childDocumentUri,
