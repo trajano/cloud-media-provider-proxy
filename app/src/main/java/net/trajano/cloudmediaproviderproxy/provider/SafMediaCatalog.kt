@@ -5,12 +5,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.AssetFileDescriptor
 import android.database.Cursor
+import android.graphics.Point
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
-import android.os.OperationCanceledException
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
+import android.provider.CloudMediaProviderContract
 import android.util.Base64
 import android.util.Log
 import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
@@ -20,7 +21,10 @@ import java.io.FileNotFoundException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import androidx.core.net.toUri
 
 internal class SafMediaCatalog(
@@ -55,7 +59,7 @@ internal class SafMediaCatalog(
         }
     }
 
-    fun queryMedia(): SafMediaSnapshot = snapshot(configuredRootUri())
+    fun queryMedia(signal: CancellationSignal? = null): SafMediaSnapshot = snapshot(configuredRootUri(), signal)
 
     fun openMedia(mediaId: String, signal: CancellationSignal?): ParcelFileDescriptor {
         val documentUri = resolveMediaUri(mediaId)
@@ -68,25 +72,52 @@ internal class SafMediaCatalog(
         mediaId: String,
         syncGeneration: Long,
         signal: CancellationSignal?,
+        size: Point = Point(512, 512),
+        extras: Bundle? = null,
+        mimeType: String? = null,
+        allowOriginalFallback: Boolean = true,
     ): AssetFileDescriptor {
+        signal?.throwIfCanceled()
         val documentUri = resolveMediaUri(mediaId)
-        val exactPreviewFile = previewFileStore.cachedFileFor(mediaId, syncGeneration)
-        val stalePreviewFile = if (exactPreviewFile == null) {
-            previewFileStore.latestCachedFileFor(mediaId)?.also {
-                refreshPreviewAsync(mediaId, syncGeneration, documentUri)
-            }
-        } else {
-            null
+        if (mimeType?.startsWith("video/") == true &&
+            extras?.getBoolean(CloudMediaProviderContract.EXTRA_PREVIEW_THUMBNAIL, false) != true
+        ) {
+            return openOriginalPreview(documentUri, signal)
         }
-        val resolvedPreviewFile = exactPreviewFile ?: stalePreviewFile ?: previewFileStore.fileFor(
-            mediaId,
-            syncGeneration,
-        ) { targetFile ->
-            copyPreviewToFile(documentUri, signal, targetFile)
+        val edge = previewEdge(size.x, size.y)
+        val previewKey = "$mediaId:thumbnail:$edge"
+        val exactPreviewFile = PREVIEW_EDGES.asSequence().filter { it >= edge }.mapNotNull { cachedEdge ->
+            previewFileStore.cachedFileFor("$mediaId:thumbnail:$cachedEdge", syncGeneration)
+        }.firstOrNull()
+        if (exactPreviewFile != null) return openCachedPreview(exactPreviewFile)
+        val stalePreviewFile = previewFileStore.latestCachedFileFor(previewKey)
+        if (stalePreviewFile != null) {
+            // Open before refreshing so replacement cannot remove the file before we acquire its descriptor.
+            val descriptor = openCachedPreview(stalePreviewFile)
+            refreshPreviewAsync(previewKey, syncGeneration, documentUri, edge)
+            return descriptor
+        }
+        val resolvedPreviewFile = try {
+            previewFileStore.fileFor(
+                previewKey,
+                syncGeneration,
+                checkCanceled = { signal?.throwIfCanceled() },
+            ) { targetFile ->
+                copyPreviewToFile(documentUri, signal, targetFile, edge)
+            }
+        } catch (error: FileNotFoundException) {
+            if (!allowOriginalFallback || mimeType?.startsWith("video/") == true) throw error
+            // Let the consumer read the original directly instead of waiting for a full cache copy.
+            return openOriginalPreview(documentUri, signal)
         }
 
+        return openCachedPreview(resolvedPreviewFile)
+    }
+
+    /** Acquire a descriptor before a refresh is allowed to replace a cached generation. */
+    private fun openCachedPreview(file: java.io.File): AssetFileDescriptor {
         val parcelFileDescriptor = ParcelFileDescriptor.open(
-            resolvedPreviewFile,
+            file,
             ParcelFileDescriptor.MODE_READ_ONLY,
         )
         return AssetFileDescriptor(parcelFileDescriptor, 0L, AssetFileDescriptor.UNKNOWN_LENGTH)
@@ -109,23 +140,32 @@ internal class SafMediaCatalog(
         mediaId: String,
         syncGeneration: Long,
         documentUri: Uri,
+        edge: Int,
     ) {
         val refreshKey = "$mediaId:$syncGeneration"
+        val signal = SafMediaCacheStore.backgroundPreviewSignal()
         if (ACTIVE_PREVIEW_REFRESHES.putIfAbsent(refreshKey, true) != null) {
             return
         }
 
-        previewRefreshExecutor.execute {
-            try {
-                previewFileStore.fileFor(mediaId, syncGeneration) { targetFile ->
-                    copyPreviewToFile(documentUri, signal = null, targetFile = targetFile)
+        try {
+            previewRefreshExecutor.execute {
+                try {
+                    previewFileStore.fileFor(
+                        mediaId, syncGeneration, checkCanceled = signal::throwIfCanceled,
+                    ) { targetFile ->
+                        copyPreviewToFile(documentUri, signal, targetFile, edge)
+                    }
+                } catch (_: android.os.OperationCanceledException) {
+                    // Folder changes invalidate pending background work.
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to refresh cached thumbnail", error)
+                } finally {
+                    ACTIVE_PREVIEW_REFRESHES.remove(refreshKey)
                 }
-                Log.i(TAG, "Refreshed preview cache for mediaId=$mediaId generation=$syncGeneration")
-            } catch (error: Exception) {
-                Log.w(TAG, "Failed to refresh preview cache for mediaId=$mediaId generation=$syncGeneration", error)
-            } finally {
-                ACTIVE_PREVIEW_REFRESHES.remove(refreshKey)
             }
+        } catch (_: RejectedExecutionException) {
+            ACTIVE_PREVIEW_REFRESHES.remove(refreshKey)
         }
     }
 
@@ -133,11 +173,12 @@ internal class SafMediaCatalog(
         documentUri: Uri,
         signal: CancellationSignal?,
         targetFile: java.io.File,
+        edge: Int,
     ) {
-        loadPreviewAssetFileDescriptor(documentUri, signal).use { descriptor ->
+        loadPreviewAssetFileDescriptor(documentUri, signal, edge).use { descriptor ->
             descriptor.createInputStream().use { inputStream ->
                 FileOutputStream(targetFile).use { outputStream ->
-                    inputStream.copyTo(outputStream)
+                    copyWithCancellation(inputStream, outputStream) { signal?.throwIfCanceled() }
                 }
             }
         }
@@ -146,25 +187,23 @@ internal class SafMediaCatalog(
     private fun loadPreviewAssetFileDescriptor(
         documentUri: Uri,
         signal: CancellationSignal?,
+        edge: Int,
     ): AssetFileDescriptor {
         val options = Bundle().apply {
-            putParcelable(ContentResolver.EXTRA_SIZE, android.graphics.Point(512, 512))
+            putParcelable(ContentResolver.EXTRA_SIZE, Point(edge, edge))
         }
 
-        try {
-            return context.contentResolver.openTypedAssetFileDescriptor(
-                documentUri,
-                "image/*",
-                options,
-                signal,
-            ) ?: throw FileNotFoundException("Unable to open typed preview for $documentUri")
-        } catch (e: OperationCanceledException) {
-            throw e
-        } catch (e: FileNotFoundException) {
-            Log.w(TAG, "Typed preview load failed for $documentUri; falling back to direct asset", e)
-        }
+        return context.contentResolver.openTypedAssetFileDescriptor(
+            documentUri,
+            "image/*",
+            options,
+            signal,
+        ) ?: throw FileNotFoundException("Unable to open typed preview for $documentUri")
+    }
+
+    /** Return full media without first duplicating a remote download into our cache. */
+    private fun openOriginalPreview(documentUri: Uri, signal: CancellationSignal?): AssetFileDescriptor {
         signal?.throwIfCanceled()
-
         return context.contentResolver.openAssetFileDescriptor(documentUri, "r", signal)
             ?: throw FileNotFoundException("Unable to open preview for $documentUri")
     }
@@ -173,8 +212,19 @@ internal class SafMediaCatalog(
         private const val TAG = "SafMediaCatalog"
         private const val DIRECTORY_MIME_TYPE = DocumentsContract.Document.MIME_TYPE_DIR
         private const val MAX_INDEXED_IMAGE_SIZE_BYTES = 10L * 1024L * 1024L
-        private val PREVIEW_REFRESH_EXECUTOR: ExecutorService = Executors.newSingleThreadExecutor()
+        private val PREVIEW_REFRESH_EXECUTOR: ExecutorService = ThreadPoolExecutor(
+            2, 2, 0L, TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue(16),
+            ThreadPoolExecutor.AbortPolicy(),
+        )
         private val ACTIVE_PREVIEW_REFRESHES = ConcurrentHashMap<String, Boolean>()
+        private val PREVIEW_EDGES = listOf(256, 512, 1024, 2048)
+
+        /** Reuse a small set of thumbnail sizes without undersizing normal picker requests. */
+        internal fun previewEdge(width: Int, height: Int): Int {
+            val requested = maxOf(width, height, 1)
+            return PREVIEW_EDGES.firstOrNull { it >= requested } ?: 2048
+        }
 
         private const val KEY_MEDIA_COLLECTION_ID =
             android.provider.CloudMediaProviderContract.MediaCollectionInfo.MEDIA_COLLECTION_ID
@@ -210,14 +260,14 @@ internal class SafMediaCatalog(
         }
     }
 
-    private fun snapshot(rootUri: Uri?): SafMediaSnapshot {
+    private fun snapshot(rootUri: Uri?, signal: CancellationSignal?): SafMediaSnapshot {
         if (rootUri == null) {
             return SafMediaSnapshot(emptyList(), 0L)
         }
 
         val rootDocumentUri = resolveRootDocumentUri(rootUri) ?: return SafMediaSnapshot(emptyList(), 0L)
         val mediaItems = mutableListOf<SafMediaItem>()
-        walkDocumentTree(rootUri = rootUri, documentUri = rootDocumentUri, mediaItems = mediaItems)
+        walkDocumentTree(rootUri = rootUri, documentUri = rootDocumentUri, mediaItems = mediaItems, signal = signal)
         val sortedItems = mediaItems.sortedByDescending { it.dateTakenMillis ?: 0L }
         val lastSyncGeneration = sortedItems.maxOfOrNull(SafMediaItem::syncGeneration) ?: 0L
 
@@ -243,6 +293,7 @@ internal class SafMediaCatalog(
         rootUri: Uri,
         documentUri: Uri,
         mediaItems: MutableList<SafMediaItem>,
+        signal: CancellationSignal?,
     ) {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
             rootUri,
@@ -256,8 +307,10 @@ internal class SafMediaCatalog(
             DocumentsContract.Document.COLUMN_SIZE,
         )
 
-        context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+        signal?.throwIfCanceled()
+        context.contentResolver.query(childrenUri, projection, null, null, null, signal)?.use { cursor ->
             while (cursor.moveToNext()) {
+                signal?.throwIfCanceled()
                 val documentId = cursor.getString(0) ?: continue
                 val displayName = cursor.getString(1)
                 val lastModified = cursor.getLongOrNull(2)
@@ -267,7 +320,7 @@ internal class SafMediaCatalog(
                     DocumentsContract.buildDocumentUriUsingTree(rootUri, documentId)
 
                 when {
-                    mimeType == DIRECTORY_MIME_TYPE -> walkDocumentTree(rootUri, childDocumentUri, mediaItems)
+                    mimeType == DIRECTORY_MIME_TYPE -> walkDocumentTree(rootUri, childDocumentUri, mediaItems, signal)
                     shouldIndexMedia(mimeType, sizeBytes) -> {
                         mediaItems += SafMediaItem(
                             mediaId = mediaId(childDocumentUri),
@@ -315,7 +368,10 @@ internal data class SafMediaItem(
 internal data class SafMediaSnapshot(
     val mediaItems: List<SafMediaItem>,
     val lastSyncGeneration: Long,
-)
+) {
+    /** Build the lookup once so opening a thumbnail does not scan the library. */
+    val mediaById: Map<String, SafMediaItem> by lazy { mediaItems.associateBy(SafMediaItem::mediaId) }
+}
 
 internal fun accountNameForDisplay(authority: String?, providerLabel: String?): String {
     val trimmedLabel = providerLabel?.trim().orEmpty()

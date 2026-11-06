@@ -123,15 +123,17 @@ class SafCloudMediaProvider : CloudMediaProvider() {
         extras: Bundle?,
         signal: CancellationSignal?,
     ): AssetFileDescriptor {
+        SafMediaCacheStore.prioritizeVisiblePreviews()
+        signal?.throwIfCanceled()
         val catalog = catalog()
             ?: throw FileNotFoundException("Preview opening is unavailable without a provider context")
-        val syncGeneration = cache()?.currentStateSnapshot()
+        val mediaItem = cache()?.currentStateSnapshot()
             ?.current
-            ?.mediaItems
-            ?.firstOrNull { mediaItem -> mediaItem.mediaId == mediaId }
-            ?.syncGeneration
-            ?: 0L
-        return catalog.openPreview(mediaId, syncGeneration, signal)
+            ?.mediaById
+            ?.get(mediaId)
+        return catalog.openPreview(
+            mediaId, mediaItem?.syncGeneration ?: 0L, signal, size, extras, mediaItem?.mimeType,
+        )
     }
 
     private fun emptyCursorWithCollectionId(vararg columns: String): Cursor =

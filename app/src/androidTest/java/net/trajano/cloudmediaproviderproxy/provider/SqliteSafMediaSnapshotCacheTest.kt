@@ -10,11 +10,64 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SqliteSafMediaSnapshotCacheTest {
+
+    /** Reuse the indexed snapshot for repeated thumbnail lookups. */
+    @Test
+    fun warmRequestsReuseIndexedSnapshot() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val cache = SqliteSafMediaSnapshotCache(
+            context, "memory-test-${System.nanoTime()}",
+            { snapshot(mediaItem("cached", 10L)) },
+        )
+        try {
+            val first = cache.currentStateSnapshot()
+            assertSame(first, cache.currentStateSnapshot())
+            assertEquals("cached", cache.currentSnapshot().mediaById["cached"]?.mediaId)
+        } finally {
+            cache.invalidate()
+        }
+    }
+
+    /** Share one initial remote scan between simultaneous picker requests. */
+    @Test
+    fun concurrentColdRequestsShareOneScan() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val requests = Executors.newFixedThreadPool(2)
+        val scans = AtomicInteger()
+        val cache = SqliteSafMediaSnapshotCache(
+            context, "cold-test-${System.nanoTime()}", {
+                scans.incrementAndGet()
+                started.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                snapshot(mediaItem("cached", 10L))
+            },
+        )
+        try {
+            val first = requests.submit(Callable { cache.currentStateSnapshot() })
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            val second = requests.submit(Callable { cache.currentStateSnapshot() })
+            release.countDown()
+            assertSame(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS))
+            assertEquals(1, scans.get())
+        } finally {
+            release.countDown()
+            requests.shutdownNow()
+            check(requests.awaitTermination(5, TimeUnit.SECONDS))
+            cache.invalidate()
+        }
+    }
 
     @Test
     fun persistedStateSurvivesAcrossCacheInstances() {

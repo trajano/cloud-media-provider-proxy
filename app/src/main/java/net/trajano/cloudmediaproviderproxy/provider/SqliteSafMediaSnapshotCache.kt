@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.database.sqlite.transaction
 import androidx.core.net.toUri
 import java.util.concurrent.ExecutorService
@@ -22,9 +23,26 @@ internal class SqliteSafMediaSnapshotCache(
 
     private val databaseHelper = SnapshotDatabaseHelper(context.applicationContext)
     private val refreshRunning = AtomicBoolean(false)
+    private val initializationLock = Any()
+    @Volatile
+    private var cached: PersistedState? = null
+    @Volatile
+    private var invalidated = false
+
+    /** Close storage after any current commit and reject subsequent refresh results. */
+    @Synchronized
+    override fun invalidate() {
+        invalidated = true
+        executor.shutdownNow()
+        databaseHelper.close()
+    }
 
     override fun currentStateSnapshot(): SafMediaSnapshotState {
-        val persistedState = readPersistedState() ?: return refreshBlocking()
+        check(!invalidated) { "Media cache was cleared" }
+        val persistedState = cached ?: synchronized(initializationLock) {
+            cached ?: readPersistedState()?.also { cached = it }
+                ?: return updateState(snapshotLoader()).state
+        }
 
         if (clock() - persistedState.refreshedAtMillis >= refreshIntervalMillis) {
             refreshAsync()
@@ -33,64 +51,50 @@ internal class SqliteSafMediaSnapshotCache(
         return persistedState.state
     }
 
-    private fun refreshBlocking(): SafMediaSnapshotState = updateState(snapshotLoader()).state
-
     private fun refreshAsync() {
         if (!refreshRunning.compareAndSet(false, true)) {
             return
         }
 
-        executor.execute {
-            try {
-                updateState(snapshotLoader())
-            } finally {
-                refreshRunning.set(false)
+        try {
+            executor.execute {
+                try {
+                    updateState(snapshotLoader())
+                } catch (error: Exception) {
+                    Log.w("SafSnapshotCache", "Unable to refresh media; retaining cached snapshot", error)
+                } finally {
+                    refreshRunning.set(false)
+                }
             }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            refreshRunning.set(false)
         }
     }
 
-    private fun readPersistedState(): PersistedState? =
-        databaseHelper.readableDatabase.useDatabase { database ->
-            val metadata = database.query(
-                SnapshotTables.TABLE_CACHE_STATE,
-                arrayOf(
-                    SnapshotTables.COLUMN_LAST_SYNC_GENERATION,
-                    SnapshotTables.COLUMN_REFRESHED_AT_MILLIS,
-                ),
-                "${SnapshotTables.COLUMN_CACHE_KEY} = ?",
-                arrayOf(cacheKey),
-                null,
-                null,
-                null,
-            ).use { cursor ->
-                if (!cursor.moveToFirst()) {
-                    return@use null
-                }
-                CacheMetadata(
-                    lastSyncGeneration = cursor.getLong(0),
-                    refreshedAtMillis = cursor.getLong(1),
-                )
-            } ?: return@useDatabase null
-
-            PersistedState(
-                state = SafMediaSnapshotState(
-                    current = SafMediaSnapshot(
-                        mediaItems = readMediaItems(database),
-                        lastSyncGeneration = metadata.lastSyncGeneration,
-                    ),
-                    lastSyncGeneration = metadata.lastSyncGeneration,
-                    deletedMedia = readDeletedMedia(database),
-                ),
-                refreshedAtMillis = metadata.refreshedAtMillis,
-            )
-        }
+    /** Read disk once per cache instance, serialized with invalidation and commits. */
+    @Synchronized
+    private fun readPersistedState(): PersistedState? {
+        check(!invalidated) { "Media cache was cleared" }
+        return databaseHelper.readableDatabase.useDatabase(::readPersistedState)
+    }
 
     @Synchronized
     private fun updateState(snapshot: SafMediaSnapshot): PersistedState {
+        check(!invalidated) { "Media cache was cleared" }
         return databaseHelper.writableDatabase.useDatabase { database ->
-            val persistedState = readPersistedState(database)?.state
+            val persistedState = cached?.state ?: readPersistedState(database)?.state
             val nextState = persistedState?.refresh(snapshot) ?: SafMediaSnapshotState.initial(snapshot)
             val refreshedAtMillis = clock()
+
+            if (nextState === persistedState) {
+                database.update(
+                    SnapshotTables.TABLE_CACHE_STATE,
+                    ContentValues().apply { put(SnapshotTables.COLUMN_REFRESHED_AT_MILLIS, refreshedAtMillis) },
+                    "${SnapshotTables.COLUMN_CACHE_KEY} = ?",
+                    arrayOf(cacheKey),
+                )
+                return@useDatabase PersistedState(nextState, refreshedAtMillis).also { cached = it }
+            }
 
             database.transaction {
                 delete(
@@ -152,7 +156,7 @@ internal class SqliteSafMediaSnapshotCache(
             PersistedState(
                 state = nextState,
                 refreshedAtMillis = refreshedAtMillis,
-            )
+            ).also { cached = it }
         }
     }
 

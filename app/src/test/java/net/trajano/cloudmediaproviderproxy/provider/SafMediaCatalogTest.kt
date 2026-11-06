@@ -7,6 +7,16 @@ import org.junit.Test
 
 class SafMediaCatalogTest {
 
+    /** Request sufficient detail while reusing nearby cached thumbnail sizes. */
+    @Test
+    fun previewSizesUseBoundedBuckets() {
+        assertEquals(256, SafMediaCatalog.previewEdge(120, 200))
+        assertEquals(512, SafMediaCatalog.previewEdge(300, 512))
+        assertEquals(1024, SafMediaCatalog.previewEdge(800, 600))
+        assertEquals(2048, SafMediaCatalog.previewEdge(10_000, 10_000))
+        assertEquals(256, SafMediaCatalog.previewEdge(0, -1))
+    }
+
     @Test
     fun accountNameForDisplayPrefersResolvedProviderLabel() {
         assertEquals(

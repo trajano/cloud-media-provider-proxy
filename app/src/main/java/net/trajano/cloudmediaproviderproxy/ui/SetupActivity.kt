@@ -37,6 +37,7 @@ class SetupActivity : AppCompatActivity() {
             }
             persistTreePermission(treeUri)
             rootPreferences.saveRootUri(treeUri)
+            SafMediaCacheStore.warmUp(this)
             refreshStatus()
         }
 

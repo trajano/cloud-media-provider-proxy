@@ -5,9 +5,32 @@ import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PreviewFileStoreTest {
+
+    /** Remove partial downloads and allow a subsequent request to retry. */
+    @Test
+    fun failedDownloadCanBeRetried() {
+        val previewDirectory = Files.createTempDirectory(java.io.File("build").toPath(), "preview-retry-").toFile()
+        val store = PreviewFileStore(previewDirectory)
+        try {
+            assertThrows(java.io.IOException::class.java) {
+                store.fileFor("retry", 10L) { target ->
+                    target.writeText("partial")
+                    throw java.io.IOException("Remote transfer failed")
+                }
+            }
+            assertNull(store.cachedFileFor("retry", 10L))
+            val completed = store.fileFor("retry", 10L) { it.writeText("complete") }
+            assertEquals("complete", completed.readText())
+            assertEquals(1, previewDirectory.listFiles()?.size)
+        } finally {
+            previewDirectory.deleteRecursively()
+        }
+    }
 
     @Test
     fun cacheHitDoesNotRewritePreviewFile() {

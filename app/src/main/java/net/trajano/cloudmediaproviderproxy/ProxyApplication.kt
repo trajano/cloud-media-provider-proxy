@@ -3,12 +3,14 @@ package net.trajano.cloudmediaproviderproxy
 import android.app.Application
 import android.util.Log
 import com.google.android.material.color.DynamicColors
+import net.trajano.cloudmediaproviderproxy.provider.SafMediaCacheStore
 
 class ProxyApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
         DynamicColors.applyToActivitiesIfAvailable(this)
+        SafMediaCacheStore.warmUp(this)
         Log.i(TAG, "Cloud media provider proxy process created")
     }
 
