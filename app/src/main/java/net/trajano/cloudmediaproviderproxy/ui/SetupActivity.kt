@@ -70,6 +70,14 @@ class SetupActivity : AppCompatActivity() {
         clearRootButton.setOnClickListener {
             clearSafRoot()
         }
+        findViewById<MaterialSwitch>(R.id.compatible_photos_switch).apply {
+            isChecked = rootPreferences.compatiblePhotosEnabled()
+            setOnCheckedChangeListener { _, enabled ->
+                SafMediaCacheStore.clearAll(this@SetupActivity, preserveLocalMediaLinks = true)
+                rootPreferences.setCompatiblePhotosEnabled(enabled)
+                SafMediaCacheStore.warmUp(this@SetupActivity)
+            }
+        }
         showAdvancedSwitch.isChecked = rootPreferences.showAdvancedRoots()
         showAdvancedSwitch.setOnCheckedChangeListener { _, isChecked ->
             rootPreferences.setShowAdvancedRoots(isChecked)

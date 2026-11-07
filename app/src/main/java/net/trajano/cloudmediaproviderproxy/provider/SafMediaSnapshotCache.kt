@@ -4,6 +4,8 @@ internal interface SafMediaSnapshotCache {
     /** Prevent work for a previous folder from repopulating cleared caches. */
     fun invalidate() {}
 
+    fun requestRefresh() {}
+
     fun currentStateSnapshot(): SafMediaSnapshotState
 
     fun currentSnapshot(): SafMediaSnapshot = currentStateSnapshot().current

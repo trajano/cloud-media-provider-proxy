@@ -14,4 +14,7 @@
     <string name="setup_status_unknown">unknown</string>
     <string name="setup_provider_icon_content_description">%1$s icon</string>
     <string name="setup_back">Back</string>
+    <string name="photo_compatibility_title">Photo compatibility</string>
+    <string name="compatible_photos_toggle">Serve compatible JPEG copies</string>
+    <string name="compatible_photos_description">Google Contacts has a 10 MB image size limit. To work within that limit, this option converts PNG photos larger than 10 MB to JPEG copies of at most 10 MB. Works with any selected folder and applies to all apps using this provider. Original files stay unchanged. Transparency becomes white; quality or resolution may be reduced. Preparing copies can take time.</string>
 </resources>

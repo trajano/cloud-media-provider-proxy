@@ -40,22 +40,24 @@ class SafMediaCatalogTest {
     }
 
     @Test
-    fun indexesImagesUpToTenMegabytes() {
-        assertTrue(SafMediaCatalog.shouldIndexMedia("image/jpeg", 10L * 1024L * 1024L))
+    fun indexesImages() {
+        assertTrue(SafMediaCatalog.shouldIndexMedia("image/jpeg"))
+        assertTrue(SafMediaCatalog.shouldIndexMedia("image/png"))
     }
 
     @Test
-    fun excludesImagesOverTenMegabytes() {
-        assertFalse(SafMediaCatalog.shouldIndexMedia("image/jpeg", (10L * 1024L * 1024L) + 1L))
+    fun doesNotIndexDocuments() {
+        assertFalse(SafMediaCatalog.shouldIndexMedia("application/pdf"))
+        assertFalse(SafMediaCatalog.shouldIndexMedia("application/json"))
     }
 
     @Test
     fun keepsVideosRegardlessOfSize() {
-        assertTrue(SafMediaCatalog.shouldIndexMedia("video/mp4", Long.MAX_VALUE))
+        assertTrue(SafMediaCatalog.shouldIndexMedia("video/mp4"))
     }
 
     @Test
-    fun keepsImagesWhenSizeIsUnknown() {
-        assertTrue(SafMediaCatalog.shouldIndexMedia("image/jpeg", null))
+    fun doesNotIndexDirectoriesAsMedia() {
+        assertFalse(SafMediaCatalog.shouldIndexMedia("vnd.android.document/directory"))
     }
 }

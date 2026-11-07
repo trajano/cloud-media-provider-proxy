@@ -46,14 +46,20 @@ class SafMediaCacheStoreTest {
         val previewFile = PreviewFileStore(SafMediaCacheStore.previewDirectory(context)).fileFor("media-id", 1L) {
             it.writeText("preview")
         }
+        val originalFile = OriginalMediaFileStore(SafMediaCacheStore.originalsDirectory(context)).open(
+            "test-original", 1L, 8L, writer = { file, _ -> file.writeText("original") }, reader = { it },
+        )!!
 
         assertTrue(File(context.applicationInfo.dataDir, "databases/${SqliteSafMediaSnapshotCache.DATABASE_NAME}").exists())
         assertTrue(previewFile.exists())
+        assertTrue(originalFile.exists())
+        assertTrue(originalFile.canonicalPath.startsWith(context.cacheDir.canonicalPath))
 
         SafMediaCacheStore.clearAll(context)
 
         assertFalse(File(context.applicationInfo.dataDir, "databases/${SqliteSafMediaSnapshotCache.DATABASE_NAME}").exists())
         assertFalse(previewFile.exists())
+        assertFalse(originalFile.exists())
     }
 
     private class ImmediateExecutorService : AbstractExecutorService() {

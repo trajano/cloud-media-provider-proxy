@@ -19,10 +19,12 @@ internal class SqliteSafMediaSnapshotCache(
     private val clock: () -> Long = SystemClock::elapsedRealtime,
     private val refreshIntervalMillis: Long = REFRESH_INTERVAL_MILLIS,
     private val executor: ExecutorService = Executors.newSingleThreadExecutor(),
+    private val onSnapshotChanged: () -> Unit = {},
 ) : SafMediaSnapshotCache {
 
     private val databaseHelper = SnapshotDatabaseHelper(context.applicationContext)
     private val refreshRunning = AtomicBoolean(false)
+    private val refreshRequested = AtomicBoolean(false)
     private val initializationLock = Any()
     @Volatile
     private var cached: PersistedState? = null
@@ -40,15 +42,27 @@ internal class SqliteSafMediaSnapshotCache(
     override fun currentStateSnapshot(): SafMediaSnapshotState {
         check(!invalidated) { "Media cache was cleared" }
         val persistedState = cached ?: synchronized(initializationLock) {
-            cached ?: readPersistedState()?.also { cached = it }
-                ?: return updateState(snapshotLoader()).state
+            cached ?: (readPersistedState() ?: updateState(snapshotLoader())).also {
+                cached = it
+                // A different collection can contain zero items. Announce its first committed
+                // snapshot, including one restored from disk, so Android discards the old list.
+                // Queue the callback so an OS query can return before the notification calls back.
+                executor.execute { if (!invalidated) onSnapshotChanged() }
+            }
         }
 
-        if (clock() - persistedState.refreshedAtMillis >= refreshIntervalMillis) {
+        val age = clock() - persistedState.refreshedAtMillis
+        if (age < 0L || age >= refreshIntervalMillis) {
             refreshAsync()
         }
 
         return persistedState.state
+    }
+
+    override fun requestRefresh() {
+        if (invalidated) return
+        refreshRequested.set(true)
+        refreshAsync()
     }
 
     private fun refreshAsync() {
@@ -59,11 +73,21 @@ internal class SqliteSafMediaSnapshotCache(
         try {
             executor.execute {
                 try {
-                    updateState(snapshotLoader())
+                    do {
+                        refreshRequested.set(false)
+                        val changed = synchronized(initializationLock) {
+                            val previousState = cached?.state
+                            updateState(snapshotLoader()).state !== previousState
+                        }
+                        if (changed && !invalidated) onSnapshotChanged()
+                    } while (refreshRequested.get() && !invalidated)
                 } catch (error: Exception) {
+                    // A failed provider may notify on every attempt; wait for the next request to retry.
+                    refreshRequested.set(false)
                     Log.w("SafSnapshotCache", "Unable to refresh media; retaining cached snapshot", error)
                 } finally {
                     refreshRunning.set(false)
+                    if (refreshRequested.get() && !invalidated) refreshAsync()
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -136,6 +160,7 @@ internal class SqliteSafMediaSnapshotCache(
                             putNullableLong(SnapshotTables.COLUMN_DATE_TAKEN_MILLIS, item.dateTakenMillis)
                             put(SnapshotTables.COLUMN_ITEM_SYNC_GENERATION, item.syncGeneration)
                             putNullableLong(SnapshotTables.COLUMN_SIZE_BYTES, item.sizeBytes)
+                            put(SnapshotTables.COLUMN_MEDIA_STORE_URI, item.mediaStoreUri?.toString())
                         },
                     )
                 }
@@ -206,6 +231,7 @@ internal class SqliteSafMediaSnapshotCache(
                 SnapshotTables.COLUMN_DATE_TAKEN_MILLIS,
                 SnapshotTables.COLUMN_ITEM_SYNC_GENERATION,
                 SnapshotTables.COLUMN_SIZE_BYTES,
+                SnapshotTables.COLUMN_MEDIA_STORE_URI,
             ),
             "${SnapshotTables.COLUMN_CACHE_KEY} = ?",
             arrayOf(cacheKey),
@@ -224,6 +250,7 @@ internal class SqliteSafMediaSnapshotCache(
                             dateTakenMillis = cursor.getNullableLong(4),
                             syncGeneration = cursor.getLong(5),
                             sizeBytes = cursor.getNullableLong(6),
+                            mediaStoreUri = cursor.getString(7)?.toUri(),
                         ),
                     )
                 }
@@ -308,6 +335,7 @@ internal class SqliteSafMediaSnapshotCache(
                     ${SnapshotTables.COLUMN_DATE_TAKEN_MILLIS} INTEGER,
                     ${SnapshotTables.COLUMN_ITEM_SYNC_GENERATION} INTEGER NOT NULL,
                     ${SnapshotTables.COLUMN_SIZE_BYTES} INTEGER,
+                    ${SnapshotTables.COLUMN_MEDIA_STORE_URI} TEXT,
                     PRIMARY KEY (${SnapshotTables.COLUMN_CACHE_KEY}, ${SnapshotTables.COLUMN_MEDIA_ID})
                 )
                 """.trimIndent(),
@@ -329,10 +357,10 @@ internal class SqliteSafMediaSnapshotCache(
             oldVersion: Int,
             newVersion: Int,
         ) {
-            db.execSQL("DROP TABLE IF EXISTS ${SnapshotTables.TABLE_DELETED_MEDIA}")
-            db.execSQL("DROP TABLE IF EXISTS ${SnapshotTables.TABLE_MEDIA_ITEMS}")
-            db.execSQL("DROP TABLE IF EXISTS ${SnapshotTables.TABLE_CACHE_STATE}")
-            onCreate(db)
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE ${SnapshotTables.TABLE_MEDIA_ITEMS} " +
+                    "ADD COLUMN ${SnapshotTables.COLUMN_MEDIA_STORE_URI} TEXT")
+            }
         }
     }
 
@@ -352,11 +380,12 @@ internal class SqliteSafMediaSnapshotCache(
         const val COLUMN_DATE_TAKEN_MILLIS = "date_taken_millis"
         const val COLUMN_ITEM_SYNC_GENERATION = "item_sync_generation"
         const val COLUMN_SIZE_BYTES = "size_bytes"
+        const val COLUMN_MEDIA_STORE_URI = "media_store_uri"
     }
 
     companion object {
         internal const val DATABASE_NAME = "saf-media-snapshots.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
         private const val REFRESH_INTERVAL_MILLIS = 5_000L
     }
 }

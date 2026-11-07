@@ -7,20 +7,23 @@ internal data class SafMediaSnapshotState(
 ) {
 
     fun refresh(snapshot: SafMediaSnapshot): SafMediaSnapshotState {
-        if (snapshot == current) {
+        val changedItems = snapshot.mediaItems.filter { item ->
+            val previous = current.mediaById[item.mediaId]
+            previous == null || item.copy(syncGeneration = previous.syncGeneration) != previous
+        }
+        val refreshedIds = snapshot.mediaItems.mapTo(hashSetOf(), SafMediaItem::mediaId)
+        val deletedIds = current.mediaById.keys.filterNot(refreshedIds::contains)
+        if (changedItems.isEmpty() && deletedIds.isEmpty()) {
             return this
         }
 
-        val currentIds = current.mediaItems.mapTo(linkedSetOf(), SafMediaItem::mediaId)
-        val refreshedIds = snapshot.mediaItems.mapTo(hashSetOf(), SafMediaItem::mediaId)
-        val deletedIds = currentIds.filterNot(refreshedIds::contains)
-        val hasChanges = snapshot != current
-        val nextGeneration = if (hasChanges) {
-            maxOf(snapshot.lastSyncGeneration, lastSyncGeneration + 1L)
-        } else {
-            lastSyncGeneration
+        val nextGeneration = maxOf(snapshot.lastSyncGeneration, lastSyncGeneration + 1L)
+        val changedIds = changedItems.mapTo(hashSetOf(), SafMediaItem::mediaId)
+        val indexedItems = snapshot.mediaItems.map { item ->
+            if (item.mediaId in changedIds) item.copy(syncGeneration = nextGeneration)
+            else current.mediaById.getValue(item.mediaId)
         }
-        val deletedMedia = deletedIds.map { mediaId ->
+        val tombstones = deletedMedia.filterNot { it.mediaId in refreshedIds } + deletedIds.map { mediaId ->
             DeletedMedia(
                 mediaId = mediaId,
                 syncGeneration = nextGeneration,
@@ -28,9 +31,9 @@ internal data class SafMediaSnapshotState(
         }
 
         return SafMediaSnapshotState(
-            current = snapshot,
+            current = SafMediaSnapshot(indexedItems, nextGeneration),
             lastSyncGeneration = nextGeneration,
-            deletedMedia = deletedMedia,
+            deletedMedia = tombstones,
         )
     }
 
