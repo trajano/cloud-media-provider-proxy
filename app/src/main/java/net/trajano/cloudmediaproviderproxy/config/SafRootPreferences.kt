@@ -3,6 +3,7 @@ package net.trajano.cloudmediaproviderproxy.config
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import androidx.core.content.edit
 
 class SafRootPreferences(context: Context) {
 
@@ -21,6 +22,12 @@ class SafRootPreferences(context: Context) {
 
     fun showAdvancedRoots(): Boolean =
         sharedPreferences.getBoolean(KEY_SHOW_ADVANCED_ROOTS, true)
+
+    fun compatiblePhotosEnabled(): Boolean = sharedPreferences.getBoolean("compatible-photos", false)
+
+    fun setCompatiblePhotosEnabled(enabled: Boolean) {
+        sharedPreferences.edit { putBoolean("compatible-photos", enabled) }
+    }
 
     fun setShowAdvancedRoots(showAdvancedRoots: Boolean) {
         sharedPreferences.edit().putBoolean(KEY_SHOW_ADVANCED_ROOTS, showAdvancedRoots).apply()

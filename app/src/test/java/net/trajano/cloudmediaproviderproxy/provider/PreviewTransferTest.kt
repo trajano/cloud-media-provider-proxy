@@ -9,6 +9,15 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PreviewTransferTest {
+    @Test
+    fun cacheLimitStopsBeforeWritingBeyondTheBudget() {
+        val output = ByteArrayOutputStream()
+        assertThrows(TransferLimitExceededException::class.java) {
+            copyWithCancellation(ByteArrayInputStream(ByteArray(30_000)), output, maxBytes = 10_000L) {}
+        }
+        assertEquals(8192, output.size())
+    }
+
     /** Preserve every byte across buffer boundaries. */
     @Test
     fun copyPreservesContentAcrossMultipleBuffers() {

@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.graphics.Point
+import android.graphics.BitmapFactory
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
@@ -18,6 +20,8 @@ import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 import net.trajano.cloudmediaproviderproxy.ui.SetupActivity
 import java.io.FileOutputStream
 import java.io.FileNotFoundException
+import java.io.IOException
+import java.util.concurrent.CancellationException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -34,7 +38,23 @@ internal class SafMediaCatalog(
         SafMediaCacheStore.previewDirectory(context),
     ),
     private val previewRefreshExecutor: ExecutorService = PREVIEW_REFRESH_EXECUTOR,
+    private val originalFileStore: OriginalMediaFileStore = OriginalMediaFileStore(
+        SafMediaCacheStore.originalsDirectory(context),
+    ),
 ) {
+    private val compatiblePhotos by lazy { CompatiblePhotoStore(context) }
+
+    fun collectionId(): String = mediaCollectionId(configuredRootUri()) +
+        if (rootPreferences.compatiblePhotosEnabled()) ":${CompatiblePhotoStore.VERSION}" else ""
+
+    private val localMediaLinks by lazy { LocalMediaLinkStore.forContext(context) }
+    private val localMediaLinker by lazy {
+        LocalMediaLinker(context, localMediaLinks, previewRefreshExecutor) {
+            configuredRootUri()?.let { root ->
+                SafMediaCacheStore.cacheFor(context, root.toString(), ::queryMedia).requestRefresh()
+            }
+        }
+    }
 
     fun buildCollectionInfo(
         snapshot: SafMediaSnapshot = queryMedia(),
@@ -43,7 +63,7 @@ internal class SafMediaCatalog(
         val rootUri = configuredRootUri()
 
         return Bundle().apply {
-            putString(KEY_MEDIA_COLLECTION_ID, mediaCollectionId(rootUri))
+            putString(KEY_MEDIA_COLLECTION_ID, collectionId())
             putLong(KEY_LAST_MEDIA_SYNC_GENERATION, lastSyncGeneration)
             putString(
                 KEY_ACCOUNT_NAME,
@@ -61,9 +81,64 @@ internal class SafMediaCatalog(
 
     fun queryMedia(signal: CancellationSignal? = null): SafMediaSnapshot = snapshot(configuredRootUri(), signal)
 
-    fun openMedia(mediaId: String, signal: CancellationSignal?): ParcelFileDescriptor {
+    fun openMedia(
+        mediaId: String,
+        signal: CancellationSignal?,
+        item: SafMediaItem? = null,
+    ): ParcelFileDescriptor {
+        val folderSignal = SafMediaCacheStore.folderCancellationSignal()
         val documentUri = resolveMediaUri(mediaId)
-        Log.i(TAG, "Opening media mediaId=$mediaId documentUri=$documentUri")
+        signal?.throwIfCanceled()
+        folderSignal.throwIfCanceled()
+        if (mediaId.endsWith(CompatiblePhotoStore.ID_SUFFIX)) {
+            if (!rootPreferences.compatiblePhotosEnabled() || item == null) {
+                throw FileNotFoundException("Compatible photo is no longer available")
+            }
+            return compatiblePhotos.open(item, signal) { openRemoteMedia(documentUri, signal) }
+        }
+        if (item != null) {
+            try {
+                val cached = originalFileStore.open(
+                    mediaId, item.syncGeneration, item.sizeBytes,
+                    checkCanceled = {
+                        signal?.throwIfCanceled()
+                        folderSignal.throwIfCanceled()
+                    },
+                    writer = { target, checkCanceled ->
+                        Log.i(TAG, "Fetching original for cache")
+                        openRemoteMedia(documentUri, signal).use { descriptor ->
+                            localMediaLinker.fromDescriptor(item, descriptor, folderSignal)
+                            ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
+                                FileOutputStream(target).use { output ->
+                                    copyWithCancellation(input, output, originalFileStore.maxBytes,
+                                        checkCanceled)
+                                }
+                            }
+                        }
+                    },
+                    reader = { file -> ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY) },
+                )
+                if (cached != null) {
+                    localMediaLinker.forCachedOriginal(item, folderSignal) {
+                        openRemoteMedia(documentUri, folderSignal)
+                    }
+                    Log.i(TAG, "Serving original from private cache")
+                    return cached
+                }
+            } catch (_: CancellationException) {
+                throw android.os.OperationCanceledException("Original cache was cleared")
+            } catch (error: IOException) {
+                Log.w(TAG, "Original cache unavailable; opening source directly", error)
+            }
+        }
+        signal?.throwIfCanceled()
+        folderSignal.throwIfCanceled()
+        return openRemoteMedia(documentUri, signal).also { descriptor ->
+            if (item != null) localMediaLinker.fromDescriptor(item, descriptor, folderSignal)
+        }
+    }
+
+    private fun openRemoteMedia(documentUri: Uri, signal: CancellationSignal?): ParcelFileDescriptor {
         return context.contentResolver.openFileDescriptor(documentUri, "r", signal)
             ?: throw FileNotFoundException("Unable to open $documentUri")
     }
@@ -79,6 +154,27 @@ internal class SafMediaCatalog(
     ): AssetFileDescriptor {
         signal?.throwIfCanceled()
         val documentUri = resolveMediaUri(mediaId)
+        if (mediaId.endsWith(CompatiblePhotoStore.ID_SUFFIX)) {
+            val item = SafMediaCacheStore.cacheFor(context, configuredRootUri().toString(), ::queryMedia)
+                .currentSnapshot().mediaById[mediaId]
+                ?: throw FileNotFoundException("Compatible photo is no longer indexed")
+            val edge = previewEdge(size.x, size.y)
+            val file = previewFileStore.fileFor("$mediaId:thumbnail:$edge", syncGeneration,
+                checkCanceled = { signal?.throwIfCanceled() }) { target ->
+                openMedia(mediaId, signal, item).use { descriptor ->
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, bounds)
+                    var sample = 1
+                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > edge * 2) sample *= 2
+                    val bitmap = BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null,
+                        BitmapFactory.Options().apply { inSampleSize = sample })
+                        ?: throw IOException("Cannot decode compatible preview")
+                    try { target.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) } }
+                    finally { bitmap.recycle() }
+                }
+            }
+            return openCachedPreview(file)
+        }
         if (mimeType?.startsWith("video/") == true &&
             extras?.getBoolean(CloudMediaProviderContract.EXTRA_PREVIEW_THUMBNAIL, false) != true
         ) {
@@ -143,7 +239,7 @@ internal class SafMediaCatalog(
         edge: Int,
     ) {
         val refreshKey = "$mediaId:$syncGeneration"
-        val signal = SafMediaCacheStore.backgroundPreviewSignal()
+        val signal = SafMediaCacheStore.folderCancellationSignal()
         if (ACTIVE_PREVIEW_REFRESHES.putIfAbsent(refreshKey, true) != null) {
             return
         }
@@ -211,7 +307,6 @@ internal class SafMediaCatalog(
     companion object {
         private const val TAG = "SafMediaCatalog"
         private const val DIRECTORY_MIME_TYPE = DocumentsContract.Document.MIME_TYPE_DIR
-        private const val MAX_INDEXED_IMAGE_SIZE_BYTES = 10L * 1024L * 1024L
         private val PREVIEW_REFRESH_EXECUTOR: ExecutorService = ThreadPoolExecutor(
             2, 2, 0L, TimeUnit.MILLISECONDS,
             ArrayBlockingQueue(16),
@@ -236,28 +331,23 @@ internal class SafMediaCatalog(
             android.provider.CloudMediaProviderContract.MediaCollectionInfo.ACCOUNT_CONFIGURATION_INTENT
 
         fun mediaCollectionId(rootUri: Uri?): String =
-            rootUri?.toString()?.let { "tree:${it.hashCode()}" } ?: "unconfigured"
+            // Reindex IDs without padding so Android's synthetic file paths match URI grants.
+            rootUri?.toString()?.let { "tree-v3:${it.hashCode()}" } ?: "unconfigured"
 
         fun mediaId(documentUri: Uri): String =
             Base64.encodeToString(
                 documentUri.toString().toByteArray(StandardCharsets.UTF_8),
-                Base64.NO_WRAP or Base64.URL_SAFE,
+                Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING,
             )
 
         fun decodeMediaId(mediaId: String): Uri =
             String(
-                Base64.decode(mediaId, Base64.NO_WRAP or Base64.URL_SAFE),
+                Base64.decode(mediaId.removeSuffix(CompatiblePhotoStore.ID_SUFFIX), Base64.NO_WRAP or Base64.URL_SAFE),
                 StandardCharsets.UTF_8,
             ).toUri()
 
-        internal fun shouldIndexMedia(
-            mimeType: String,
-            sizeBytes: Long?,
-        ): Boolean = when {
-            mimeType.startsWith("video/") -> true
-            mimeType.startsWith("image/") -> sizeBytes == null || sizeBytes <= MAX_INDEXED_IMAGE_SIZE_BYTES
-            else -> false
-        }
+        internal fun shouldIndexMedia(mimeType: String): Boolean =
+            mimeType.startsWith("image/") || mimeType.startsWith("video/")
     }
 
     private fun snapshot(rootUri: Uri?, signal: CancellationSignal?): SafMediaSnapshot {
@@ -308,7 +398,7 @@ internal class SafMediaCatalog(
         )
 
         signal?.throwIfCanceled()
-        context.contentResolver.query(childrenUri, projection, null, null, null, signal)?.use { cursor ->
+        SafDirectoryReader(context.contentResolver).read(childrenUri, projection, signal) { cursor ->
             while (cursor.moveToNext()) {
                 signal?.throwIfCanceled()
                 val documentId = cursor.getString(0) ?: continue
@@ -321,8 +411,8 @@ internal class SafMediaCatalog(
 
                 when {
                     mimeType == DIRECTORY_MIME_TYPE -> walkDocumentTree(rootUri, childDocumentUri, mediaItems, signal)
-                    shouldIndexMedia(mimeType, sizeBytes) -> {
-                        mediaItems += SafMediaItem(
+                    shouldIndexMedia(mimeType) -> {
+                        val item = SafMediaItem(
                             mediaId = mediaId(childDocumentUri),
                             documentUri = childDocumentUri,
                             displayName = displayName,
@@ -331,10 +421,23 @@ internal class SafMediaCatalog(
                             syncGeneration = lastModified?.coerceAtLeast(1L) ?: 1L,
                             sizeBytes = sizeBytes,
                         )
+                        if (rootPreferences.compatiblePhotosEnabled() && mimeType == "image/png" &&
+                            (sizeBytes == null || sizeBytes > CompatiblePhotoStore.MAX_BYTES)) {
+                            compatiblePhotos.open(item, signal) { openRemoteMedia(childDocumentUri, signal) }.use { photo ->
+                                mediaItems += item.copy(
+                                    mediaId = item.mediaId + CompatiblePhotoStore.ID_SUFFIX,
+                                    displayName = displayName?.substringBeforeLast('.')?.plus(".jpg"),
+                                    mimeType = "image/jpeg", sizeBytes = photo.statSize,
+                                    mediaStoreUri = null,
+                                )
+                            }
+                        } else {
+                            mediaItems += item.copy(mediaStoreUri = localMediaLinks.resolve(item))
+                        }
                     }
                 }
             }
-        } ?: Log.w(TAG, "Unable to query SAF children for $documentUri")
+        }
     }
 
     private fun resolveRootDocumentUri(rootUri: Uri): Uri? =
@@ -363,6 +466,7 @@ internal data class SafMediaItem(
     val dateTakenMillis: Long?,
     val syncGeneration: Long,
     val sizeBytes: Long?,
+    val mediaStoreUri: Uri? = null,
 )
 
 internal data class SafMediaSnapshot(

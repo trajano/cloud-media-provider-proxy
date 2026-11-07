@@ -1,26 +1,31 @@
 package net.trajano.cloudmediaproviderproxy.provider
 
 import android.content.Context
+import android.database.ContentObserver
 import android.graphics.Point
+import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.provider.CloudMediaProviderContract
+import android.provider.MediaStore
 import android.util.Log
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 
 internal object SafMediaCacheStore {
     private const val TAG = "SafMediaCacheStore"
     private val snapshotCaches = ConcurrentHashMap<String, SafMediaSnapshotCache>()
     private val scanSignals = mutableMapOf<String, CancellationSignal>()
+    private val sourceObservers = mutableMapOf<String, ContentObserver>()
     private val warmUpExecutor = Executors.newSingleThreadExecutor()
     private var warmUpSignal: CancellationSignal? = null
-    private var refreshSignal = CancellationSignal()
+    private var folderSignal = CancellationSignal()
 
-    /** Share folder-lifetime cancellation with stale thumbnail refreshes. */
+    /** Cancel thumbnail refreshes and original transfers when the selected folder changes. */
     @Synchronized
-    fun backgroundPreviewSignal(): CancellationSignal = refreshSignal
+    fun folderCancellationSignal(): CancellationSignal = folderSignal
 
     /** Index ahead of the picker and warm only a bounded batch of recent thumbnails. */
     @Synchronized
@@ -78,18 +83,43 @@ internal object SafMediaCacheStore {
             scanSignals[cacheKey] = scanSignal
             SqliteSafMediaSnapshotCache(
                 context = context,
-                cacheKey = cacheKey,
+                cacheKey = cacheKey + if (SafRootPreferences(context).compatiblePhotosEnabled()) {
+                    ":${CompatiblePhotoStore.VERSION}"
+                } else "",
                 snapshotLoader = { snapshotLoader(scanSignal) },
-            )
+                onSnapshotChanged = {
+                    val resolver = context.contentResolver
+                    val authority = "${context.packageName}.cloud"
+                    try {
+                        if (MediaStore.isCurrentCloudMediaProviderAuthority(resolver, authority)) {
+                            MediaStore.notifyCloudMediaChangedEvent(
+                                resolver, authority, SafMediaCatalog(context).collectionId(),
+                            )
+                        }
+                    } catch (error: RuntimeException) {
+                        Log.w(TAG, "Unable to notify photo picker of updated media", error)
+                    }
+                },
+            ).also { cache ->
+                Uri.parse(cacheKey).authority?.let { authority ->
+                    val observer = object : ContentObserver(null) {
+                        override fun onChange(selfChange: Boolean) { cache.requestRefresh() }
+                    }
+                    context.contentResolver.registerContentObserver(Uri.parse("content://$authority"), true, observer)
+                    sourceObservers[cacheKey] = observer
+                }
+            }
         }
 
     @Synchronized
-    fun clearAll(context: Context) {
+    fun clearAll(context: Context, preserveLocalMediaLinks: Boolean = false) {
         warmUpSignal?.cancel()
-        refreshSignal.cancel()
-        refreshSignal = CancellationSignal()
+        folderSignal.cancel()
+        folderSignal = CancellationSignal()
         scanSignals.values.forEach(CancellationSignal::cancel)
         scanSignals.clear()
+        sourceObservers.values.forEach(context.contentResolver::unregisterContentObserver)
+        sourceObservers.clear()
         val databasePath = context.getDatabasePath(SqliteSafMediaSnapshotCache.DATABASE_NAME)
         val previewRoot = previewDirectory(context)
         val previewFileCount = previewRoot.listFiles()?.size ?: 0
@@ -103,6 +133,9 @@ internal object SafMediaCacheStore {
         snapshotCaches.clear()
         val databaseDeleted = context.deleteDatabase(SqliteSafMediaSnapshotCache.DATABASE_NAME)
         val previewsDeleted = previewRoot.deleteRecursively()
+        OriginalMediaFileStore(originalsDirectory(context)).clear()
+        OriginalMediaFileStore(CompatiblePhotoStore.directory(context)).clear()
+        if (!preserveLocalMediaLinks) LocalMediaLinkStore.forContext(context).clear()
         Log.i(
             TAG,
             "SAF cache clear complete; databaseDeleted=$databaseDeleted, " +
@@ -112,6 +145,8 @@ internal object SafMediaCacheStore {
     }
 
     fun previewDirectory(context: Context): File = File(context.cacheDir, PREVIEW_DIRECTORY_NAME)
+
+    fun originalsDirectory(context: Context): File = File(context.cacheDir, "originals")
 
     private const val PREVIEW_DIRECTORY_NAME = "previews"
 }

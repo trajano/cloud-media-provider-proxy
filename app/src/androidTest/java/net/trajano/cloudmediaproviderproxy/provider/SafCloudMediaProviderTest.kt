@@ -1,5 +1,6 @@
 package net.trajano.cloudmediaproviderproxy.provider
 
+import android.content.ContentResolver
 import android.os.Bundle
 import android.provider.CloudMediaProviderContract
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -9,6 +10,32 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SafCloudMediaProviderTest {
+
+    @Test
+    fun incrementalMediaQueryReportsHonoredArgumentsAsStringArrayList() {
+        val extras = Bundle().apply {
+            putLong(CloudMediaProviderContract.EXTRA_SYNC_GENERATION, 10L)
+        }
+        SafCloudMediaProvider().onQueryMedia(extras).use { cursor ->
+            assertEquals(
+                arrayListOf(CloudMediaProviderContract.EXTRA_SYNC_GENERATION),
+                cursor.extras.getStringArrayList(ContentResolver.EXTRA_HONORED_ARGS),
+            )
+        }
+    }
+
+    @Test
+    fun incrementalDeletedMediaQueryReportsHonoredArgumentsAsStringArrayList() {
+        val extras = Bundle().apply {
+            putLong(CloudMediaProviderContract.EXTRA_SYNC_GENERATION, 10L)
+        }
+        SafCloudMediaProvider().onQueryDeletedMedia(extras).use { cursor ->
+            assertEquals(
+                arrayListOf(CloudMediaProviderContract.EXTRA_SYNC_GENERATION),
+                cursor.extras.getStringArrayList(ContentResolver.EXTRA_HONORED_ARGS),
+            )
+        }
+    }
 
     @Test
     fun queryMediaSetsMediaCollectionIdInCursorExtras() {

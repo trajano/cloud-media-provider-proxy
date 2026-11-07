@@ -20,6 +20,164 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SqliteSafMediaSnapshotCacheTest {
+    @Test
+    fun localCopyLinkSurvivesCacheRecreation() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val key = "local-link-persistence-${System.nanoTime()}"
+        val local = Uri.parse("content://media/external_primary/images/media/123")
+        val initial = SqliteSafMediaSnapshotCache(context, key, {
+            snapshot(mediaItem("photo", 20L).copy(mediaStoreUri = local))
+        })
+        initial.currentStateSnapshot()
+        initial.invalidate()
+        val restored = SqliteSafMediaSnapshotCache(context, key, { error("Must use persisted link") },
+            refreshIntervalMillis = TimeUnit.DAYS.toMillis(1))
+        try {
+            assertEquals(local, restored.currentSnapshot().mediaById.getValue("photo").mediaStoreUri)
+        } finally { restored.invalidate() }
+    }
+
+
+    @Test
+    fun initialEmptyFolderNotifiesAfterIndexCommit() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val key = "empty-folder-${System.nanoTime()}"
+        val notifications = AtomicInteger()
+        val cache = SqliteSafMediaSnapshotCache(
+            context, key, { snapshot() },
+            executor = ImmediateExecutorService(),
+            onSnapshotChanged = {
+                val persisted = SqliteSafMediaSnapshotCache(
+                    context, key, { error("Notification must follow the empty index commit") },
+                    refreshIntervalMillis = TimeUnit.DAYS.toMillis(1),
+                )
+                try {
+                    assertTrue(persisted.currentSnapshot().mediaItems.isEmpty())
+                } finally {
+                    persisted.invalidate()
+                }
+                notifications.incrementAndGet()
+            },
+        )
+        try {
+            assertTrue(cache.currentSnapshot().mediaItems.isEmpty())
+            assertEquals(1, notifications.get())
+        } finally {
+            cache.invalidate()
+        }
+    }
+
+    @Test
+    fun restoredEmptyFolderIsAnnouncedOnce() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val key = "restored-empty-${System.nanoTime()}"
+        val initial = SqliteSafMediaSnapshotCache(context, key, { snapshot() })
+        initial.currentSnapshot()
+        initial.invalidate()
+        val notifications = AtomicInteger()
+        val restored = SqliteSafMediaSnapshotCache(
+            context, key, { error("Should restore the committed empty index") },
+            refreshIntervalMillis = TimeUnit.DAYS.toMillis(1),
+            executor = ImmediateExecutorService(),
+            onSnapshotChanged = { notifications.incrementAndGet() },
+        )
+        try {
+            assertTrue(restored.currentSnapshot().mediaItems.isEmpty())
+            restored.currentSnapshot()
+            assertEquals(1, notifications.get())
+        } finally {
+            restored.invalidate()
+        }
+    }
+
+    @Test
+    fun sourceChangeDuringScanIsNotLost() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val scans = AtomicInteger()
+        lateinit var cache: SqliteSafMediaSnapshotCache
+        cache = SqliteSafMediaSnapshotCache(
+            context, "scan-notification-${System.nanoTime()}", {
+                val scan = scans.incrementAndGet()
+                if (scan == 2) cache.requestRefresh()
+                if (scan < 3) snapshot(mediaItem("existing", 20L))
+                else snapshot(mediaItem("existing", 20L), mediaItem("new", 5L))
+            },
+            executor = ImmediateExecutorService(),
+        )
+        try {
+            cache.currentStateSnapshot()
+            cache.requestRefresh()
+            assertEquals(3, scans.get())
+            assertEquals(21L, cache.currentSnapshot().mediaById.getValue("new").syncGeneration)
+        } finally {
+            cache.invalidate()
+        }
+    }
+
+    @Test
+    fun sourceChangeRefreshesBeforeExpiryAndNotifiesAfterCommit() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val existing = mediaItem("existing", 20L)
+        val source = AtomicReference(snapshot(existing))
+        val notifications = AtomicInteger()
+        val key = "source-change-${System.nanoTime()}"
+        val cache = SqliteSafMediaSnapshotCache(
+            context = context,
+            cacheKey = key,
+            snapshotLoader = source::get,
+            refreshIntervalMillis = TimeUnit.DAYS.toMillis(1),
+            executor = ImmediateExecutorService(),
+            onSnapshotChanged = {
+                val persisted = SqliteSafMediaSnapshotCache(
+                    context, key, { error("Notification must follow commit") },
+                    refreshIntervalMillis = TimeUnit.DAYS.toMillis(1),
+                )
+                try {
+                    assertEquals(if (notifications.get() == 0) 20L else 21L,
+                        persisted.currentStateSnapshot().lastSyncGeneration)
+                } finally {
+                    persisted.invalidate()
+                }
+                notifications.incrementAndGet()
+            },
+        )
+        try {
+            assertEquals(20L, cache.currentStateSnapshot().lastSyncGeneration)
+            assertEquals(1, notifications.get())
+            source.set(snapshot(existing, mediaItem("older-upload", 5L)))
+            cache.requestRefresh()
+            assertEquals(2, notifications.get())
+            assertEquals(21L, cache.currentSnapshot().mediaById.getValue("older-upload").syncGeneration)
+            cache.requestRefresh()
+            assertEquals(2, notifications.get())
+        } finally {
+            cache.invalidate()
+        }
+    }
+
+    @Test
+    fun failedRemoteReloadRetainsTheIndexedPhotos() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        var fail = false
+        val notifications = AtomicInteger()
+        val cache = SqliteSafMediaSnapshotCache(
+            context, "failed-reload-${System.nanoTime()}", {
+                if (fail) throw java.io.IOException("Remote folder is still loading")
+                snapshot(mediaItem("kept", 20L))
+            },
+            executor = ImmediateExecutorService(),
+            onSnapshotChanged = { notifications.incrementAndGet() },
+        )
+        try {
+            val indexed = cache.currentStateSnapshot()
+            fail = true
+            cache.requestRefresh()
+            assertSame(indexed, cache.currentStateSnapshot())
+            assertEquals(1, notifications.get())
+        } finally {
+            cache.invalidate()
+        }
+    }
 
     /** Reuse the indexed snapshot for repeated thumbnail lookups. */
     @Test

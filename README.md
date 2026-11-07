@@ -67,6 +67,23 @@ first copying the entire file into the preview cache. Background warming skips
 unavailable thumbnails. Remote providers may still need to download content before
 returning a descriptor; device measurements are needed to assess that latency.
 
+## Photo compatibility
+
+Google Contacts has a 10 MB image size limit. Enable **Serve compatible JPEG
+copies** in the setup screen to convert PNG photos larger than 10 MB into JPEG
+copies of at most 10 MB. The option is off by default and applies to all apps
+using this provider, with any selected SAF folder. Original files stay unchanged.
+
+Converted photos and prepared originals are stored in the app's private cache.
+Android may reclaim that cache; a later request downloads or prepares the file
+again. JPEG conversion flattens transparency onto white and may reduce quality or
+resolution to meet the limit.
+
+The source app can also retain downloads in shared storage and make them visible
+to Android's local photo library. A local original and a converted JPEG can then
+appear separately in the system picker. The provider does not scan source files
+into the gallery or modify the source app's downloads.
+
 ## Developer notes
 
 Developer and release details live in [docs/development.md](docs/development.md).

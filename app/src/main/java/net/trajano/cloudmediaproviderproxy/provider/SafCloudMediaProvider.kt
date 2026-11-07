@@ -64,7 +64,7 @@ class SafCloudMediaProvider : CloudMediaProvider() {
             cursor.addRow(
                 arrayOf<Any?>(
                     mediaItem.mediaId,
-                    null,
+                    mediaItem.mediaStoreUri?.toString(),
                     mediaItem.mimeType,
                     0,
                     mediaItem.dateTakenMillis,
@@ -114,8 +114,12 @@ class SafCloudMediaProvider : CloudMediaProvider() {
         mediaId: String,
         extras: Bundle?,
         signal: CancellationSignal?,
-    ): ParcelFileDescriptor = catalog()?.openMedia(mediaId, signal)
-        ?: throw FileNotFoundException("Media opening is unavailable without a provider context")
+    ): ParcelFileDescriptor {
+        val catalog = catalog()
+            ?: throw FileNotFoundException("Media opening is unavailable without a provider context")
+        val item = cache()?.currentStateSnapshot()?.current?.mediaById?.get(mediaId)
+        return catalog.openMedia(mediaId, signal, item)
+    }
 
     override fun onOpenPreview(
         mediaId: String,
@@ -147,15 +151,15 @@ class SafCloudMediaProvider : CloudMediaProvider() {
             extras = Bundle().apply {
                 putString(CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID, collectionId)
                 honoredSyncGeneration?.let {
-                    putStringArray(
+                    putStringArrayList(
                         ContentResolver.EXTRA_HONORED_ARGS,
-                        arrayOf(CloudMediaProviderContract.EXTRA_SYNC_GENERATION),
+                        arrayListOf(CloudMediaProviderContract.EXTRA_SYNC_GENERATION),
                     )
                 }
             }
         }
 
-    private fun collectionId(): String = catalog()?.configuredRootUri()?.let(SafMediaCatalog::mediaCollectionId)
+    private fun collectionId(): String = catalog()?.collectionId()
         ?: MEDIA_COLLECTION_ID
 
     private fun catalog(): SafMediaCatalog? = context?.let(::SafMediaCatalog)

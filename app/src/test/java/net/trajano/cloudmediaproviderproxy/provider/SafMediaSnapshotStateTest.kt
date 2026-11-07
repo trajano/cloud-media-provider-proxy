@@ -6,6 +6,54 @@ import org.junit.Test
 import org.mockito.Mockito.mock
 
 class SafMediaSnapshotStateTest {
+    @Test
+    fun localCopyLinkIsPublishedAsAnIncrementalMediaUpdate() {
+        val photo = mediaItem("photo", 20L)
+        val initial = SafMediaSnapshotState.initial(snapshot(photo))
+        val local = mock(android.net.Uri::class.java)
+        val source = snapshot(photo.copy(mediaStoreUri = local))
+        val linked = initial.refresh(source)
+
+        assertEquals(21L, linked.lastSyncGeneration)
+        assertEquals(local, linked.current.mediaById.getValue("photo").mediaStoreUri)
+        assertEquals(21L, linked.current.mediaById.getValue("photo").syncGeneration)
+        assertTrue(linked === linked.refresh(source))
+    }
+
+
+    @Test
+    fun newlyDiscoveredOlderPhotoIsIncludedInIncrementalSync() {
+        val existing = mediaItem("existing", syncGeneration = 20L)
+        val state = SafMediaSnapshotState.initial(snapshot(existing))
+
+        val refreshed = state.refresh(snapshot(existing, mediaItem("uploaded-old-photo", 5L)))
+
+        val incrementalItems = refreshed.current.mediaItems.filter { it.syncGeneration > state.lastSyncGeneration }
+        assertEquals(listOf("uploaded-old-photo"), incrementalItems.map(SafMediaItem::mediaId))
+        assertEquals(21L, incrementalItems.single().syncGeneration)
+    }
+
+    @Test
+    fun rescanningSourceTimestampsDoesNotCreateAnotherChange() {
+        val existing = mediaItem("existing", 20L)
+        val olderPhoto = mediaItem("older", 5L)
+        val source = snapshot(existing, olderPhoto)
+        val refreshed = SafMediaSnapshotState.initial(snapshot(existing)).refresh(source)
+
+        assertTrue(refreshed === refreshed.refresh(source))
+    }
+
+    @Test
+    fun deletionsRemainAvailableUntilAnItemReappears() {
+        val kept = mediaItem("kept", 20L)
+        val removed = mediaItem("removed", 5L)
+        val initial = SafMediaSnapshotState.initial(snapshot(kept, removed))
+        val deleted = initial.refresh(snapshot(kept))
+        val added = deleted.refresh(snapshot(kept, mediaItem("another", 1L)))
+
+        assertEquals(deleted.deletedMedia, added.deletedMedia)
+        assertTrue(added.refresh(snapshot(kept, removed)).deletedMedia.none { it.mediaId == removed.mediaId })
+    }
 
     @Test
     fun repeatedGenerationWithoutChangesReusesExistingState() {
