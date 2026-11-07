@@ -3,12 +3,12 @@ package net.trajano.cloudmediaproviderproxy.provider
 import android.content.Context
 import android.database.ContentObserver
 import android.graphics.Point
-import android.net.Uri
-import android.os.Bundle
 import android.os.CancellationSignal
 import android.provider.CloudMediaProviderContract
 import android.provider.MediaStore
 import android.util.Log
+import androidx.core.net.toUri
+import androidx.core.os.bundleOf
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -16,7 +16,7 @@ import net.trajano.cloudmediaproviderproxy.config.SafRootPreferences
 
 internal object SafMediaCacheStore {
     private const val TAG = "SafMediaCacheStore"
-    private val snapshotCaches = ConcurrentHashMap<String, SafMediaSnapshotCache>()
+    private val snapshotCaches = ConcurrentHashMap<String, SqliteSafMediaSnapshotCache>()
     private val scanSignals = mutableMapOf<String, CancellationSignal>()
     private val sourceObservers = mutableMapOf<String, ContentObserver>()
     private val warmUpExecutor = Executors.newSingleThreadExecutor()
@@ -36,14 +36,13 @@ internal object SafMediaCacheStore {
         val application = context.applicationContext
         val catalog = SafMediaCatalog(application)
         val root = catalog.configuredRootUri() ?: return
+        MediaBackgroundWork.watch(application)
         val cache = cacheFor(application, root.toString(), catalog::queryMedia)
         warmUpExecutor.execute {
             try {
                 signal.throwIfCanceled()
                 val snapshot = cache.currentSnapshot()
-                val extras = Bundle().apply {
-                    putBoolean(CloudMediaProviderContract.EXTRA_PREVIEW_THUMBNAIL, true)
-                }
+                val extras = bundleOf(CloudMediaProviderContract.EXTRA_PREVIEW_THUMBNAIL to true)
                 snapshot.mediaItems.sortedByDescending { it.dateTakenMillis ?: 0L }.take(12).forEach { item ->
                     signal.throwIfCanceled()
                     if (catalog.configuredRootUri() != root) return@execute
@@ -77,12 +76,14 @@ internal object SafMediaCacheStore {
         context: Context,
         cacheKey: String,
         snapshotLoader: (CancellationSignal) -> SafMediaSnapshot,
-    ): SafMediaSnapshotCache =
+    ): SqliteSafMediaSnapshotCache =
         snapshotCaches.computeIfAbsent(cacheKey) {
             val scanSignal = CancellationSignal()
             scanSignals[cacheKey] = scanSignal
             SqliteSafMediaSnapshotCache(
                 context = context,
+                initializeInBackground = true,
+                requestBackgroundRefresh = { MediaBackgroundWork.request(context.applicationContext) },
                 cacheKey = cacheKey + if (SafRootPreferences(context).compatiblePhotosEnabled()) {
                     ":${CompatiblePhotoStore.VERSION}"
                 } else "",
@@ -101,11 +102,11 @@ internal object SafMediaCacheStore {
                     }
                 },
             ).also { cache ->
-                Uri.parse(cacheKey).authority?.let { authority ->
+                cacheKey.toUri().authority?.let { authority ->
                     val observer = object : ContentObserver(null) {
                         override fun onChange(selfChange: Boolean) { cache.requestRefresh() }
                     }
-                    context.contentResolver.registerContentObserver(Uri.parse("content://$authority"), true, observer)
+                    context.contentResolver.registerContentObserver("content://$authority".toUri(), true, observer)
                     sourceObservers[cacheKey] = observer
                 }
             }
@@ -113,6 +114,8 @@ internal object SafMediaCacheStore {
 
     @Synchronized
     fun clearAll(context: Context, preserveLocalMediaLinks: Boolean = false) {
+        SafRootPreferences(context).advanceBackgroundWorkEpoch()
+        MediaBackgroundWork.cancel(context)
         warmUpSignal?.cancel()
         folderSignal.cancel()
         folderSignal = CancellationSignal()
@@ -132,9 +135,10 @@ internal object SafMediaCacheStore {
         snapshotCaches.values.forEach(SafMediaSnapshotCache::invalidate)
         snapshotCaches.clear()
         val databaseDeleted = context.deleteDatabase(SqliteSafMediaSnapshotCache.DATABASE_NAME)
-        val previewsDeleted = previewRoot.deleteRecursively()
+        val previewsDeleted = PreviewFileStore.clearDirectory(previewRoot)
         OriginalMediaFileStore(originalsDirectory(context)).clear()
         OriginalMediaFileStore(CompatiblePhotoStore.directory(context)).clear()
+        CompatiblePhotoStore.clearMetadata(context)
         if (!preserveLocalMediaLinks) LocalMediaLinkStore.forContext(context).clear()
         Log.i(
             TAG,

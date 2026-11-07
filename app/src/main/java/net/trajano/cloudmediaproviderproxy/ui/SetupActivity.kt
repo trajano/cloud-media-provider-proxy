@@ -1,6 +1,7 @@
 package net.trajano.cloudmediaproviderproxy.ui
 
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.net.Uri
@@ -8,13 +9,14 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.util.Log
 import android.view.View
-import android.widget.ImageView
-import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.graphics.Insets
+import androidx.appcompat.widget.AppCompatImageView
+import androidx.appcompat.widget.AppCompatTextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isVisible
+import androidx.core.view.updatePadding
 import androidx.documentfile.provider.DocumentFile
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
@@ -26,8 +28,8 @@ import net.trajano.cloudmediaproviderproxy.provider.SafMediaCacheStore
 class SetupActivity : AppCompatActivity() {
 
     private val openDocumentTree =
-        registerForActivityResult(StartActivityForResult()) { result ->
-            val treeUri = result.data?.data ?: return@registerForActivityResult
+        registerForActivityResult(SafFolderPicker()) { treeUri ->
+            if (treeUri == null) return@registerForActivityResult
             val previousRootUri = rootPreferences.getRootUri()
             if (treeUri != previousRootUri) {
                 Log.i(TAG, "SAF root changed; clearing caches. previous=$previousRootUri new=$treeUri")
@@ -43,8 +45,8 @@ class SetupActivity : AppCompatActivity() {
 
     private lateinit var rootPreferences: SafRootPreferences
     private lateinit var showAdvancedSwitch: MaterialSwitch
-    private lateinit var providerIconView: ImageView
-    private lateinit var statusTextView: TextView
+    private lateinit var providerIconView: AppCompatImageView
+    private lateinit var statusTextView: AppCompatTextView
     private lateinit var pickRootButton: MaterialButton
     private lateinit var clearRootButton: MaterialButton
 
@@ -70,6 +72,20 @@ class SetupActivity : AppCompatActivity() {
         clearRootButton.setOnClickListener {
             clearSafRoot()
         }
+        findViewById<MaterialButton>(R.id.open_nextcloud_button).setOnClickListener {
+            val intent = nextcloudLaunchIntent(rootPreferences.getRootUri()?.authority)
+            if (intent == null) {
+                showNextcloudUnavailable()
+            } else {
+                try {
+                    startActivity(intent)
+                } catch (_: ActivityNotFoundException) {
+                    showNextcloudUnavailable()
+                } catch (_: SecurityException) {
+                    showNextcloudUnavailable()
+                }
+            }
+        }
         findViewById<MaterialSwitch>(R.id.compatible_photos_switch).apply {
             isChecked = rootPreferences.compatiblePhotosEnabled()
             setOnCheckedChangeListener { _, enabled ->
@@ -86,17 +102,31 @@ class SetupActivity : AppCompatActivity() {
         refreshStatus()
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshNextcloudStorageNotice()
+    }
+
+    private fun refreshNextcloudStorageNotice() {
+        val authority = rootPreferences.getRootUri()?.authority
+        val visible = isNextcloudDocumentsAuthority(authority)
+        findViewById<View>(R.id.nextcloud_storage_notice).isVisible = visible
+        findViewById<View>(R.id.open_nextcloud_button).isVisible = visible && nextcloudLaunchIntent(authority) != null
+    }
+
+    private fun nextcloudLaunchIntent(authority: String?): Intent? {
+        if (!isNextcloudDocumentsAuthority(authority)) return null
+        val provider = packageManager.resolveContentProvider(authority!!, PackageManager.MATCH_DISABLED_COMPONENTS)
+            ?: return null
+        return packageManager.getLaunchIntentForPackage(provider.packageName)
+    }
+
+    private fun showNextcloudUnavailable() {
+        Toast.makeText(this, R.string.nextcloud_unavailable, Toast.LENGTH_SHORT).show()
+    }
+
     private fun chooseSafRoot() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(
-                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
-            )
-            putExtra("android.content.extra.SHOW_ADVANCED", showAdvancedSwitch.isChecked)
-            rootPreferences.getRootUri()?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
-        }
-        openDocumentTree.launch(intent)
+        openDocumentTree.launch(rootPreferences.getRootUri())
     }
 
     private fun clearSafRoot() {
@@ -122,6 +152,7 @@ class SetupActivity : AppCompatActivity() {
     }
 
     private fun refreshStatus() {
+        refreshNextcloudStorageNotice()
         val rootUri = rootPreferences.getRootUri()
         if (rootUri == null) {
             providerIconView.setImageDrawable(null)
@@ -207,11 +238,11 @@ class SetupActivity : AppCompatActivity() {
 
         ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(
-                basePaddingLeft + systemBars.left,
-                basePaddingTop + systemBars.top,
-                basePaddingRight + systemBars.right,
-                basePaddingBottom + systemBars.bottom,
+            view.updatePadding(
+                left = basePaddingLeft + systemBars.left,
+                top = basePaddingTop + systemBars.top,
+                right = basePaddingRight + systemBars.right,
+                bottom = basePaddingBottom + systemBars.bottom,
             )
             insets
         }

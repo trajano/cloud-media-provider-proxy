@@ -10,6 +10,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CompatiblePhotoStoreTest {
+    @Test fun preparedSizeSurvivesImageCacheEvictionWithoutAnotherDownload() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val directory = File(context.cacheDir, "compatible-size-test-${System.nanoTime()}")
+        val files = OriginalMediaFileStore(directory)
+        val store = CompatiblePhotoStore(context, files)
+        val source = File.createTempFile("compatible-size", ".png", context.cacheDir)
+        val bitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        val item = SafMediaItem("size", Uri.fromFile(source), "photo.png", "image/png", 1, 1, source.length())
+        try {
+            val size = store.open(item, null) { ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY) }.use { it.statSize }
+            files.clear()
+            assertTrue(directory.listFiles().orEmpty().isEmpty())
+            assertEquals(size, CompatiblePhotoStore(context, files).knownSize(item))
+            assertNull(store.knownSize(item.copy(dateTakenMillis = 2)))
+        } finally { files.clear(); directory.delete(); source.delete() }
+    }
+
     @Test fun aJpegBetweenEightAndTenMegabytesKeepsItsInitialQuality() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val source = File.createTempFile("ten-mb-source", ".png", context.cacheDir)
@@ -45,11 +64,11 @@ class CompatiblePhotoStoreTest {
         var opens = 0
         val openSource = { opens++; ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY) }
         try {
-            val first = store.open(item, null, openSource).use { it.statSize }
+            val first = store.open(item, null, source = openSource).use { it.statSize }
             assertTrue(first in 1..CompatiblePhotoStore.MAX_BYTES)
-            store.open(item, null, openSource).use { assertEquals(first, it.statSize) }
+            store.open(item, null, source = openSource).use { assertEquals(first, it.statSize) }
             assertEquals(1, opens)
-            store.open(item.copy(dateTakenMillis = 2L), null, openSource).close()
+            store.open(item.copy(dateTakenMillis = 2L), null, source = openSource).close()
             assertEquals(2, opens)
         } finally { source.delete() }
     }

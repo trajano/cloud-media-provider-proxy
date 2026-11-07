@@ -19,7 +19,12 @@ import org.mockito.Mockito.*
 
 class SafMediaRefreshTest {
     @Test
-    fun waitsForRemoteFolderReloadBeforePublishingLargePhoto() {
+    fun waitsForRemoteFolderReloadBeforePublishingLargePhoto() = checkRemoteReload(false)
+
+    @Test
+    fun compatibleMetadataScanDoesNotDownloadOriginals() = checkRemoteReload(true)
+
+    private fun checkRemoteReload(compatible: Boolean) {
         val context = mock(Context::class.java)
         val resolver = mock(ContentResolver::class.java)
         val preferences = mock(SafRootPreferences::class.java)
@@ -34,6 +39,7 @@ class SafMediaRefreshTest {
         `when`(context.contentResolver).thenReturn(resolver)
         `when`(context.getSharedPreferences(anyString(), anyInt())).thenReturn(mock(android.content.SharedPreferences::class.java))
         `when`(preferences.getRootUri()).thenReturn(root)
+        `when`(preferences.compatiblePhotosEnabled()).thenReturn(compatible)
         `when`(preferences.hasPersistedReadPermission(resolver)).thenReturn(true)
         `when`(root.authority).thenReturn("example")
         `when`(children.authority).thenReturn("example")
@@ -44,7 +50,9 @@ class SafMediaRefreshTest {
         `when`(loaded.moveToNext()).thenReturn(true, false)
         `when`(loaded.getString(0)).thenReturn("photo")
         `when`(loaded.getString(1)).thenReturn("photo.jpg")
-        `when`(loaded.getString(3)).thenReturn("image/jpeg")
+        `when`(loaded.getString(3)).thenReturn(if (compatible) "image/png" else "image/jpeg")
+        `when`(resolver.openFileDescriptor(eq(photo), eq("r"), isNull<CancellationSignal>()))
+            .thenThrow(AssertionError("Metadata queries must not download full originals"))
         `when`(loaded.getLong(2)).thenReturn(5L)
         `when`(loaded.getLong(4)).thenReturn(14_532_852L)
         `when`(resolver.query(eq(children), any(Array<String>::class.java), isNull<String>(),
@@ -74,12 +82,15 @@ class SafMediaRefreshTest {
                         documents.`when`<Uri> { DocumentsContract.buildChildDocumentsUriUsingTree(root, "root") }.thenReturn(children)
                         documents.`when`<Uri> { DocumentsContract.buildDocumentUriUsingTree(root, "photo") }.thenReturn(photo)
                         base64.`when`<String> { Base64.encodeToString(any(ByteArray::class.java), anyInt()) }.thenReturn("photo")
-                        val catalog = SafMediaCatalog(context, preferences, PreviewFileStore(File("build/test-previews")))
+                        mockConstruction(CancellationSignal::class.java).use {
+                            val catalog = SafMediaCatalog(context, preferences, PreviewFileStore(File("build/test-previews")))
 
-                        assertEquals(listOf("photo"), catalog.queryMedia().mediaItems.map(SafMediaItem::mediaId))
-                        verify(loading).close()
-                        verify(loaded).close()
-                        verify(resolver).unregisterContentObserver(any(ContentObserver::class.java))
+                            assertEquals(if (compatible) emptyList<String>() else listOf("photo"),
+                                catalog.queryMedia().mediaItems.map(SafMediaItem::mediaId))
+                            verify(loading).close()
+                            verify(loaded).close()
+                            verify(resolver).unregisterContentObserver(any(ContentObserver::class.java))
+                        }
                     }
                 }
             }

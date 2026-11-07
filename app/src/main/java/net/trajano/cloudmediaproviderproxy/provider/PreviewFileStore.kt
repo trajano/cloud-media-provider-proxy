@@ -1,126 +1,138 @@
 package net.trajano.cloudmediaproviderproxy.provider
 
+import coil3.disk.DiskCache
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
+import java.util.logging.Logger
+import okio.Path.Companion.toOkioPath
 
-internal class PreviewFileStore(
-    private val previewDirectory: File,
-) {
-
-    fun cachedFileFor(
-        mediaId: String,
-        syncGeneration: Long,
-    ): File? {
-        val targetFile = File(previewDirectory, "${cacheKey(mediaId)}-$syncGeneration.preview")
-        return targetFile.takeIf { it.isFile && it.length() > 0L }
+/** One journaled disk cache per directory; snapshots protect files until a reader opens them. */
+internal class PreviewFileStore(private val previewDirectory: File, maxBytes: Long = DEFAULT_MAX_BYTES) {
+    private val state = states.computeIfAbsent(previewDirectory.canonicalPath) {
+        previewDirectory.listFiles { file -> file.extension in setOf("preview", "tmp") }?.forEach {
+            if (it.exists() && !it.delete()) LOGGER.warning("Cannot remove legacy thumbnail: ${it.path}")
+        }
+        DirectoryState(DiskCache.Builder().directory(File(previewDirectory, "coil-v1").toOkioPath())
+            .maxSizeBytes(maxBytes).build())
     }
 
-    fun latestCachedFileFor(mediaId: String): File? {
-        val cacheKey = cacheKey(mediaId)
-        return previewDirectory.listFiles { file ->
-            file.name.startsWith("$cacheKey-") && file.name.endsWith(".preview") && file.length() > 0L
-        }?.maxByOrNull(::generationForFile)
+    val sizeBytes: Long get() = state.cache.size
+
+    fun cachedFileFor(mediaId: String, syncGeneration: Long): File? =
+        readCached(mediaId, syncGeneration) { it }
+
+    fun latestCachedFileFor(mediaId: String): File? = readLatest(mediaId) { it }
+
+    fun <T> readCached(mediaId: String, syncGeneration: Long, reader: (File) -> T): T? =
+        read(mediaId, syncGeneration, reader)
+
+    fun <T> readLatest(mediaId: String, reader: (File) -> T): T? = read(mediaId, null, reader)
+
+    private fun <T> read(mediaId: String, generation: Long?, reader: (File) -> T): T? = synchronized(state) {
+        checkActive()
+        try {
+            state.cache.openSnapshot(mediaId)?.use { snapshot ->
+                if (generation != null && snapshot.metadata.toFile().readText().toLongOrNull() != generation) return null
+                val file = snapshot.data.toFile()
+                if (!file.isFile || file.length() == 0L) throw IOException("Cached thumbnail was reclaimed")
+                reader(file)
+            }
+        } catch (_: IOException) {
+            state.cache.remove(mediaId)
+            null
+        }
     }
 
-    /** Share writes for one resource across stores without blocking other media. */
-    fun fileFor(
-        mediaId: String,
-        syncGeneration: Long,
-        checkCanceled: () -> Unit = {},
-        writer: (File) -> Unit,
-    ): File = withMediaLock(mediaId, checkCanceled) {
+    fun fileFor(mediaId: String, syncGeneration: Long, checkCanceled: () -> Unit = {}, writer: (File) -> Unit): File =
+        withFile(mediaId, syncGeneration, checkCanceled, writer) { it }
+
+    fun <T> withFile(mediaId: String, syncGeneration: Long, checkCanceled: () -> Unit = {},
+        writer: (File) -> Unit, reader: (File) -> T): T = withMediaLock(mediaId, checkCanceled) {
         checkCanceled()
-        cachedFileFor(mediaId, syncGeneration)?.let {
-            return@withMediaLock it
+        readCached(mediaId, syncGeneration, reader)?.let { return@withMediaLock it }
+        val editor = synchronized(state) {
+            checkActive()
+            state.cache.openEditor(mediaId) ?: throw IOException("Thumbnail cache entry is busy")
         }
-
-        val cacheKey = cacheKey(mediaId)
-        val targetFile = File(previewDirectory, "$cacheKey-$syncGeneration.preview")
-        if (targetFile.isFile && targetFile.length() > 0L) {
-            return@withMediaLock targetFile
-        }
-
-        if (!previewDirectory.isDirectory && !previewDirectory.mkdirs() && !previewDirectory.isDirectory) {
-            throw IOException("Unable to create preview cache directory at $previewDirectory")
-        }
-
-        val tempFile = File(previewDirectory, "$cacheKey-$syncGeneration.tmp")
-        deleteIfExists(tempFile)
-
-        runCatching {
-            writer(tempFile)
+        var committed = false
+        try {
+            val target = editor.data.toFile()
+            writer(target)
             checkCanceled()
-            if (tempFile.length() == 0L) {
-                throw IOException("Preview is empty")
+            checkActive()
+            if (target.length() == 0L) throw IOException("Preview is empty")
+            editor.metadata.toFile().writeText(syncGeneration.toString())
+            if (target.length() + editor.metadata.toFile().length() > state.cache.maxSize) {
+                throw IOException("Preview exceeds cache budget")
             }
-            if (!tempFile.renameTo(targetFile)) {
-                tempFile.copyTo(targetFile, overwrite = true)
-                deleteIfExists(tempFile)
+            synchronized(state) {
+                checkActive()
+                val snapshot = editor.commitAndOpenSnapshot() ?: throw IOException("Cannot commit thumbnail")
+                committed = true
+                snapshot.use { reader(it.data.toFile()) }
             }
-            deleteOlderGenerations(cacheKey, targetFile)
-        }.onFailure {
-            deleteIfExists(tempFile)
-            deleteIfExists(targetFile)
-        }.getOrThrow()
-
-        targetFile
+        } finally {
+            if (!committed) runCatching { editor.abort() }
+        }
     }
 
-    /** Keep a lock alive until its last writer or waiter leaves. */
+    private fun checkActive() {
+        if (state.invalidated) throw CancellationException("Thumbnail cache was cleared")
+    }
+
     private fun <T> withMediaLock(mediaId: String, checkCanceled: () -> Unit, action: () -> T): T {
-        val key = "${previewDirectory.canonicalPath}:${cacheKey(mediaId)}"
-        val entry = locks.compute(key) { _, existing ->
-            (existing ?: MediaLock()).also { it.users++ }
-        }!!
+        val key = "${previewDirectory.canonicalPath}:$mediaId"
+        val entry = locks.compute(key) { _, existing -> (existing ?: MediaLock()).also { it.users++ } }!!
         var acquired = false
         try {
             while (!acquired) {
                 checkCanceled()
+                checkActive()
                 acquired = entry.lock.tryLock(100, TimeUnit.MILLISECONDS)
             }
             return action()
         } finally {
             if (acquired) entry.lock.unlock()
-            locks.computeIfPresent(key) { _, current ->
-                current.users--
-                current.takeIf { it.users > 0 }
-            }
+            locks.computeIfPresent(key) { _, current -> current.users--; current.takeIf { it.users > 0 } }
         }
     }
 
+    private class DirectoryState(val cache: DiskCache) { @Volatile var invalidated = false }
     private class MediaLock(val lock: ReentrantLock = ReentrantLock(), var users: Int = 0)
 
-    private fun deleteOlderGenerations(
-        cacheKey: String,
-        keepFile: File,
-    ) {
-        previewDirectory.listFiles { file ->
-            file.name.startsWith("$cacheKey-") && file.absolutePath != keepFile.absolutePath
-        }?.forEach(::deleteIfExists)
-    }
-
-    private fun deleteIfExists(file: File) {
-        if (file.exists() && !file.delete()) {
-            throw IOException("Unable to delete preview cache file $file")
-        }
-    }
-
     companion object {
+        const val DEFAULT_MAX_BYTES = 128L * 1024 * 1024
+        private val states = ConcurrentHashMap<String, DirectoryState>()
+        private val LOGGER = Logger.getLogger(PreviewFileStore::class.java.name)
         private val locks = ConcurrentHashMap<String, MediaLock>()
-        internal fun cacheKey(mediaId: String): String =
-            MessageDigest.getInstance("SHA-256")
-                .digest(mediaId.toByteArray(Charsets.UTF_8))
-                .joinToString("") { byte -> "%02x".format(byte) }
 
-        private fun generationForFile(file: File): Long =
-            file.name
-                .substringAfterLast('-')
-                .substringBefore(".preview")
-                .toLongOrNull()
-                ?: Long.MIN_VALUE
+        fun invalidateDirectory(directory: File) {
+            states.computeIfPresent(directory.canonicalPath) { _, state ->
+                close(state)
+                null
+            }
+        }
+
+        fun clearDirectory(directory: File): Boolean {
+            var deleted = false
+            states.compute(directory.canonicalPath) { _, state ->
+                // Keep a new cache from opening while its previous files are removed.
+                if (state != null) close(state)
+                deleted = directory.deleteRecursively()
+                null
+            }
+            return deleted
+        }
+
+        private fun close(state: DirectoryState) {
+            synchronized(state) {
+                state.invalidated = true
+                state.cache.shutdown()
+            }
+        }
     }
 }

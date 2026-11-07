@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.DocumentsContract
+import androidx.core.net.toUri
 import java.io.IOException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -24,7 +25,7 @@ internal class SafDirectoryReader(private val resolver: ContentResolver) {
         }
         // Nextcloud notifies the canonical document URI, rather than the tree children URI.
         // Register before querying so even an immediate reload completion cannot be missed.
-        val authorityUri = Uri.parse("content://${childrenUri.authority}")
+        val authorityUri = "content://${childrenUri.authority}".toUri()
         resolver.registerContentObserver(authorityUri, true, observer)
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         try {
@@ -40,19 +41,19 @@ internal class SafDirectoryReader(private val resolver: ContentResolver) {
                         }
                         return consume(cursor)
                     }
-                    while (!changes.tryAcquire(100, TimeUnit.MILLISECONDS)) {
-                        signal?.throwIfCanceled()
-                        if (System.nanoTime() >= deadline) {
-                            throw IOException("Timed out waiting for document provider reload")
-                        }
-                    }
-                    if (System.nanoTime() >= deadline) {
-                        throw IOException("Document provider is still loading folder")
-                    }
+                    awaitReload(changes, signal, deadline)
                 }
             }
         } finally {
             resolver.unregisterContentObserver(observer)
         }
+    }
+
+    private fun awaitReload(changes: Semaphore, signal: CancellationSignal?, deadline: Long) {
+        while (!changes.tryAcquire(100, TimeUnit.MILLISECONDS)) {
+            signal?.throwIfCanceled()
+            if (System.nanoTime() >= deadline) throw IOException("Timed out waiting for document provider reload")
+        }
+        if (System.nanoTime() >= deadline) throw IOException("Document provider is still loading folder")
     }
 }

@@ -16,5 +16,9 @@
     <string name="setup_back">Back</string>
     <string name="photo_compatibility_title">Photo compatibility</string>
     <string name="compatible_photos_toggle">Serve compatible JPEG copies</string>
-    <string name="compatible_photos_description">Google Contacts has a 10 MB image size limit. To work within that limit, this option converts PNG photos larger than 10 MB to JPEG copies of at most 10 MB. Works with any selected folder and applies to all apps using this provider. Original files stay unchanged. Transparency becomes white; quality or resolution may be reduced. Preparing copies can take time.</string>
+    <string name="compatible_photos_description">Google Contacts has a 10 MB image size limit. To work within that limit, this option converts PNG photos larger than 10 MB to JPEG copies of at most 10 MB. Works with any selected folder and applies to all apps using this provider. Original files stay unchanged. Transparency becomes white; quality or resolution may be reduced. Compatible photos appear progressively as copies are prepared.</string>
+    <string name="nextcloud_storage_title">Avoid duplicate Nextcloud photos</string>
+    <string name="nextcloud_storage_instructions">Nextcloud can show duplicate photos in the photo picker when Data storage location has \"Allow access from other apps\" enabled. In Nextcloud, open Settings → Data storage location, select Internal storage, and turn that option off. Wait for the move to finish, then reopen the photo picker. This applies to all Nextcloud downloads. If the option is already off, no change is needed.</string>
+    <string name="open_nextcloud_button">Open Nextcloud</string>
+    <string name="nextcloud_unavailable">Nextcloud could not be opened. Open it from your app list and follow the steps above.</string>
 </resources>

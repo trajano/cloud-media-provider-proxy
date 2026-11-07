@@ -4,11 +4,12 @@ import android.content.SharedPreferences
 import android.content.Context
 import android.net.Uri
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import java.security.MessageDigest
 
 internal class LocalMediaLinkStore(private val preferences: SharedPreferences) {
     fun resolve(item: SafMediaItem): Uri? = preferences.getString(key(item), null)
-        ?.takeIf(String::isNotEmpty)?.let(Uri::parse)
+        ?.takeIf(String::isNotEmpty)?.toUri()
 
     fun hasResult(item: SafMediaItem): Boolean = preferences.contains(key(item))
 

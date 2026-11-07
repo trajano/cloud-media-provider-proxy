@@ -10,6 +10,72 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PreviewFileStoreTest {
+    @Test fun failedLegacyCacheCleanupIsReportedWithoutDisablingTheCache() {
+        val directory = Files.createTempDirectory(java.io.File("build").toPath(), "legacy-preview-").toFile()
+        val legacy = java.io.File(directory, "old.preview").apply { mkdir() }
+        java.io.File(legacy, "occupied").writeText("legacy")
+        val warnings = mutableListOf<java.util.logging.LogRecord>()
+        val logger = java.util.logging.Logger.getLogger(PreviewFileStore::class.java.name)
+        val handler = object : java.util.logging.Handler() {
+            override fun publish(record: java.util.logging.LogRecord) { warnings += record }
+            override fun flush() = Unit
+            override fun close() = Unit
+        }
+        logger.addHandler(handler)
+        try {
+            val store = PreviewFileStore(directory)
+            assertTrue("Failed legacy cleanup must be reported", warnings.isNotEmpty())
+            assertEquals("fresh", store.fileFor("photo", 1L) { it.writeText("fresh") }.readText())
+        } finally {
+            logger.removeHandler(handler)
+            PreviewFileStore.invalidateDirectory(directory)
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun reclaimedCacheFileCanBeGeneratedAgain() {
+        val directory = Files.createTempDirectory(java.io.File("build").toPath(), "preview-reclaimed-").toFile()
+        val store = PreviewFileStore(directory)
+        try {
+            val file = store.fileFor("photo", 1L) { it.writeText("old") }
+            assertTrue(file.delete())
+            assertNull(store.cachedFileFor("photo", 1L))
+            assertEquals("reloaded", store.fileFor("photo", 1L) { it.writeText("reloaded") }.readText())
+        } finally { PreviewFileStore.invalidateDirectory(directory); directory.deleteRecursively() }
+    }
+
+    @Test fun clearingTheCacheCancelsAnInFlightWriteAndAllowsANewStore() {
+        val directory = Files.createTempDirectory(java.io.File("build").toPath(), "preview-cleared-").toFile()
+        val store = PreviewFileStore(directory)
+        try {
+            assertThrows(java.util.concurrent.CancellationException::class.java) {
+                store.fileFor("photo", 1L) {
+                    it.writeText("partial")
+                    PreviewFileStore.invalidateDirectory(directory)
+                }
+            }
+            val fresh = PreviewFileStore(directory)
+            assertNull(fresh.cachedFileFor("photo", 1L))
+            assertEquals("fresh", fresh.fileFor("photo", 1L) { it.writeText("fresh") }.readText())
+        } finally { PreviewFileStore.invalidateDirectory(directory); directory.deleteRecursively() }
+    }
+
+    @Test fun cacheEvictsTheLeastRecentlyReadThumbnail() {
+        val directory = Files.createTempDirectory(java.io.File("build").toPath(), "preview-budget-").toFile()
+        val store = PreviewFileStore(directory, maxBytes = 28L)
+        try {
+            store.fileFor("old", 1L) { it.writeBytes(ByteArray(10)) }
+            store.fileFor("recent", 1L) { it.writeBytes(ByteArray(10)) }
+            assertTrue(store.cachedFileFor("recent", 1L) != null)
+            store.fileFor("new", 1L) { it.writeBytes(ByteArray(10)) }
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+            while (store.sizeBytes > 28L && System.nanoTime() < deadline) Thread.sleep(10)
+            assertNull("Oldest unread thumbnail must be evicted", store.cachedFileFor("old", 1L))
+            assertTrue(store.cachedFileFor("recent", 1L) != null)
+            assertTrue(store.cachedFileFor("new", 1L) != null)
+        } finally { directory.deleteRecursively() }
+    }
+
 
     /** Remove partial downloads and allow a subsequent request to retry. */
     @Test
@@ -26,7 +92,7 @@ class PreviewFileStoreTest {
             assertNull(store.cachedFileFor("retry", 10L))
             val completed = store.fileFor("retry", 10L) { it.writeText("complete") }
             assertEquals("complete", completed.readText())
-            assertEquals(1, previewDirectory.listFiles()?.size)
+            assertNull(store.cachedFileFor("retry", 9L))
         } finally {
             previewDirectory.deleteRecursively()
         }
@@ -66,7 +132,7 @@ class PreviewFileStoreTest {
             target.writeText("new")
         }
 
-        assertFalse(oldFile.exists())
+        assertNull(store.cachedFileFor("media-id", 10L))
         assertTrue(newFile.exists())
         assertEquals("new", newFile.readText())
     }

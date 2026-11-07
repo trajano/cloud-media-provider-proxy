@@ -16,6 +16,76 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class OriginalMediaFileStoreTest {
+    @Test fun failedAccessTimestampIsReportedWithoutLosingTheReadResult() = withCacheWarnings { warnings ->
+        val directory = directory()
+        try {
+            val result = OriginalMediaFileStore(directory).open("photo", 1L, 8L,
+                writer = { file, _ -> file.writeText("original") }, reader = { file ->
+                    val content = file.readText()
+                    assertTrue(file.delete())
+                    content
+                })
+            assertEquals("original", result)
+            assertTrue("A failed filesystem status must be reported", warnings.isNotEmpty())
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun failedTemporaryCleanupIsReportedAndPreservesTheTransferError() = withCacheWarnings { warnings ->
+        val directory = directory()
+        val transferError = java.io.IOException("Remote transfer failed")
+        try {
+            val thrown = assertThrows(java.io.IOException::class.java) {
+                OriginalMediaFileStore(directory).open("photo", 1L, 8L, writer = { file, _ ->
+                    assertTrue(file.delete())
+                    assertTrue(file.mkdir())
+                    File(file, "occupied").writeText("partial")
+                    throw transferError
+                }, reader = File::readText)
+            }
+            assertTrue(thrown === transferError)
+            assertTrue("A failed cleanup must be reported", warnings.isNotEmpty())
+        } finally { directory.deleteRecursively() }
+    }
+
+    private fun withCacheWarnings(check: (List<java.util.logging.LogRecord>) -> Unit) {
+        val logger = java.util.logging.Logger.getLogger(OriginalMediaFileStore::class.java.name)
+        val records = mutableListOf<java.util.logging.LogRecord>()
+        val handler = object : java.util.logging.Handler() {
+            override fun publish(record: java.util.logging.LogRecord) { records += record }
+            override fun flush() = Unit
+            override fun close() = Unit
+        }
+        logger.addHandler(handler)
+        try { check(records) } finally { logger.removeHandler(handler) }
+    }
+
+    @Test
+    fun cachedSizeDoesNotWaitForAnInFlightDownload() {
+        val directory = directory()
+        val store = OriginalMediaFileStore(directory)
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val download = executor.submit(Callable {
+                store.open("pending", 1, 8, writer = { file, _ ->
+                    started.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    file.writeText("original")
+                }, reader = File::length)
+            })
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            assertNull(executor.submit(Callable { store.cachedSize("pending", 1) }).get(1, TimeUnit.SECONDS))
+            release.countDown()
+            assertEquals(8L, download.get(2, TimeUnit.SECONDS))
+            assertEquals(8L, store.cachedSize("pending", 1))
+        } finally {
+            release.countDown(); executor.shutdownNow()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
+            directory.deleteRecursively()
+        }
+    }
+
     private fun directory() = Files.createTempDirectory(File("build").toPath(), "original-cache-").toFile()
 
     private fun read(store: OriginalMediaFileStore, id: String, value: String, generation: Long = 1L) =
