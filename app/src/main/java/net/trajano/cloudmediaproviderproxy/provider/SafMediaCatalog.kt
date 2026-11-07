@@ -4,10 +4,10 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.res.AssetFileDescriptor
-import android.database.Cursor
 import android.graphics.Point
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
@@ -30,6 +30,8 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import androidx.core.net.toUri
+import androidx.core.database.getLongOrNull
+import androidx.core.os.bundleOf
 
 internal class SafMediaCatalog(
     private val context: Context,
@@ -41,6 +43,7 @@ internal class SafMediaCatalog(
     private val originalFileStore: OriginalMediaFileStore = OriginalMediaFileStore(
         SafMediaCacheStore.originalsDirectory(context),
     ),
+    private val thumbnailEncoder: PhotoPreviewEncoder = PhotoPreviewEncoder(),
 ) {
     private val compatiblePhotos by lazy { CompatiblePhotoStore(context) }
 
@@ -79,7 +82,25 @@ internal class SafMediaCatalog(
         }
     }
 
-    fun queryMedia(signal: CancellationSignal? = null): SafMediaSnapshot = snapshot(configuredRootUri(), signal)
+    fun queryMedia(signal: CancellationSignal? = null): SafMediaSnapshot = readySnapshot(querySourceMedia(signal))
+
+    fun querySourceMedia(signal: CancellationSignal? = null): SafMediaSnapshot = snapshot(configuredRootUri(), signal)
+
+    fun needsCompatiblePhoto(item: SafMediaItem): Boolean =
+        rootPreferences.compatiblePhotosEnabled() && item.mimeType == "image/png" &&
+            (item.sizeBytes == null || item.sizeBytes > CompatiblePhotoStore.MAX_BYTES)
+
+    fun readySnapshot(source: SafMediaSnapshot): SafMediaSnapshot {
+        val items = source.mediaItems.mapNotNull { item ->
+            if (!needsCompatiblePhoto(item)) item
+            else compatiblePhotos.knownSize(item)?.let { size ->
+                item.copy(mediaId = item.mediaId + CompatiblePhotoStore.ID_SUFFIX,
+                    displayName = item.displayName?.substringBeforeLast('.')?.plus(".jpg"),
+                    mimeType = "image/jpeg", sizeBytes = size, mediaStoreUri = null)
+            }
+        }
+        return SafMediaSnapshot(items, items.maxOfOrNull(SafMediaItem::syncGeneration) ?: 0L)
+    }
 
     fun openMedia(
         mediaId: String,
@@ -159,8 +180,8 @@ internal class SafMediaCatalog(
                 .currentSnapshot().mediaById[mediaId]
                 ?: throw FileNotFoundException("Compatible photo is no longer indexed")
             val edge = previewEdge(size.x, size.y)
-            val file = previewFileStore.fileFor("$mediaId:thumbnail:$edge", syncGeneration,
-                checkCanceled = { signal?.throwIfCanceled() }) { target ->
+            return previewFileStore.withFile("$mediaId:thumbnail:$edge", syncGeneration,
+                checkCanceled = { signal?.throwIfCanceled() }, writer = { target ->
                 openMedia(mediaId, signal, item).use { descriptor ->
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, bounds)
@@ -172,42 +193,40 @@ internal class SafMediaCatalog(
                     try { target.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) } }
                     finally { bitmap.recycle() }
                 }
-            }
-            return openCachedPreview(file)
+            }, reader = ::openCachedPreview)
         }
-        if (mimeType?.startsWith("video/") == true &&
+        if (mimeType?.startsWith(VIDEO_MIME_PREFIX) == true &&
             extras?.getBoolean(CloudMediaProviderContract.EXTRA_PREVIEW_THUMBNAIL, false) != true
         ) {
             return openOriginalPreview(documentUri, signal)
         }
         val edge = previewEdge(size.x, size.y)
         val previewKey = "$mediaId:thumbnail:$edge"
-        val exactPreviewFile = PREVIEW_EDGES.asSequence().filter { it >= edge }.mapNotNull { cachedEdge ->
-            previewFileStore.cachedFileFor("$mediaId:thumbnail:$cachedEdge", syncGeneration)
+        val exactPreview = PREVIEW_EDGES.asSequence().filter { it >= edge }.mapNotNull { cachedEdge ->
+            previewFileStore.readCached("$mediaId:thumbnail:$cachedEdge", syncGeneration, ::openCachedPreview)
         }.firstOrNull()
-        if (exactPreviewFile != null) return openCachedPreview(exactPreviewFile)
-        val stalePreviewFile = previewFileStore.latestCachedFileFor(previewKey)
-        if (stalePreviewFile != null) {
-            // Open before refreshing so replacement cannot remove the file before we acquire its descriptor.
-            val descriptor = openCachedPreview(stalePreviewFile)
+        if (exactPreview != null) return exactPreview
+        val stalePreview = previewFileStore.readLatest(previewKey, ::openCachedPreview)
+        if (stalePreview != null) {
             refreshPreviewAsync(previewKey, syncGeneration, documentUri, edge)
-            return descriptor
+            return stalePreview
         }
-        val resolvedPreviewFile = try {
-            previewFileStore.fileFor(
+        val preview = try {
+            previewFileStore.withFile(
                 previewKey,
                 syncGeneration,
                 checkCanceled = { signal?.throwIfCanceled() },
-            ) { targetFile ->
-                copyPreviewToFile(documentUri, signal, targetFile, edge)
-            }
-        } catch (error: FileNotFoundException) {
-            if (!allowOriginalFallback || mimeType?.startsWith("video/") == true) throw error
+                writer = { targetFile -> copyPreviewToFile(documentUri, signal, targetFile, edge,
+                    allowOriginalFallback && mimeType?.startsWith(VIDEO_MIME_PREFIX) != true) },
+                reader = ::openCachedPreview,
+            )
+        } catch (error: IOException) {
+            if (!allowOriginalFallback || mimeType?.startsWith(VIDEO_MIME_PREFIX) == true) throw error
             // Let the consumer read the original directly instead of waiting for a full cache copy.
             return openOriginalPreview(documentUri, signal)
         }
 
-        return openCachedPreview(resolvedPreviewFile)
+        return preview
     }
 
     /** Acquire a descriptor before a refresh is allowed to replace a cached generation. */
@@ -270,12 +289,22 @@ internal class SafMediaCatalog(
         signal: CancellationSignal?,
         targetFile: java.io.File,
         edge: Int,
+        allowOriginalFallback: Boolean = false,
     ) {
-        loadPreviewAssetFileDescriptor(documentUri, signal, edge).use { descriptor ->
-            descriptor.createInputStream().use { inputStream ->
-                FileOutputStream(targetFile).use { outputStream ->
-                    copyWithCancellation(inputStream, outputStream) { signal?.throwIfCanceled() }
+        try {
+            loadPreviewAssetFileDescriptor(documentUri, signal, edge).use { descriptor ->
+                descriptor.createInputStream().use { inputStream ->
+                    FileOutputStream(targetFile).use { outputStream ->
+                        copyWithCancellation(inputStream, outputStream) { signal?.throwIfCanceled() }
+                    }
                 }
+            }
+            if (targetFile.length() == 0L) throw IOException("Source thumbnail is empty")
+        } catch (error: IOException) {
+            if (!allowOriginalFallback) throw error
+            signal?.throwIfCanceled()
+            thumbnailEncoder.write(ImageDecoder.createSource(context.contentResolver, documentUri), targetFile, edge) {
+                signal?.throwIfCanceled()
             }
         }
     }
@@ -285,9 +314,7 @@ internal class SafMediaCatalog(
         signal: CancellationSignal?,
         edge: Int,
     ): AssetFileDescriptor {
-        val options = Bundle().apply {
-            putParcelable(ContentResolver.EXTRA_SIZE, Point(edge, edge))
-        }
+        val options = bundleOf(ContentResolver.EXTRA_SIZE to Point(edge, edge))
 
         return context.contentResolver.openTypedAssetFileDescriptor(
             documentUri,
@@ -306,6 +333,7 @@ internal class SafMediaCatalog(
 
     companion object {
         private const val TAG = "SafMediaCatalog"
+        private const val VIDEO_MIME_PREFIX = "video/"
         private const val DIRECTORY_MIME_TYPE = DocumentsContract.Document.MIME_TYPE_DIR
         private val PREVIEW_REFRESH_EXECUTOR: ExecutorService = ThreadPoolExecutor(
             2, 2, 0L, TimeUnit.MILLISECONDS,
@@ -347,7 +375,7 @@ internal class SafMediaCatalog(
             ).toUri()
 
         internal fun shouldIndexMedia(mimeType: String): Boolean =
-            mimeType.startsWith("image/") || mimeType.startsWith("video/")
+            mimeType.startsWith("image/") || mimeType.startsWith(VIDEO_MIME_PREFIX)
     }
 
     private fun snapshot(rootUri: Uri?, signal: CancellationSignal?): SafMediaSnapshot {
@@ -361,7 +389,7 @@ internal class SafMediaCatalog(
         val sortedItems = mediaItems.sortedByDescending { it.dateTakenMillis ?: 0L }
         val lastSyncGeneration = sortedItems.maxOfOrNull(SafMediaItem::syncGeneration) ?: 0L
 
-        Log.i(TAG, "Indexed ${sortedItems.size} SAF media items from ${rootUri.authority}")
+        Log.i(TAG, "Read ${sortedItems.size} source metadata items from ${rootUri.authority}")
         return SafMediaSnapshot(sortedItems, lastSyncGeneration)
     }
 
@@ -421,19 +449,7 @@ internal class SafMediaCatalog(
                             syncGeneration = lastModified?.coerceAtLeast(1L) ?: 1L,
                             sizeBytes = sizeBytes,
                         )
-                        if (rootPreferences.compatiblePhotosEnabled() && mimeType == "image/png" &&
-                            (sizeBytes == null || sizeBytes > CompatiblePhotoStore.MAX_BYTES)) {
-                            compatiblePhotos.open(item, signal) { openRemoteMedia(childDocumentUri, signal) }.use { photo ->
-                                mediaItems += item.copy(
-                                    mediaId = item.mediaId + CompatiblePhotoStore.ID_SUFFIX,
-                                    displayName = displayName?.substringBeforeLast('.')?.plus(".jpg"),
-                                    mimeType = "image/jpeg", sizeBytes = photo.statSize,
-                                    mediaStoreUri = null,
-                                )
-                            }
-                        } else {
-                            mediaItems += item.copy(mediaStoreUri = localMediaLinks.resolve(item))
-                        }
+                        mediaItems += item.copy(mediaStoreUri = localMediaLinks.resolve(item))
                     }
                 }
             }
@@ -450,12 +466,6 @@ internal class SafMediaCatalog(
             Log.w(TAG, "Unable to resolve SAF root document URI for $rootUri", error)
         }.getOrNull()
 
-    private fun Cursor.getLongOrNull(columnIndex: Int): Long? =
-        if (isNull(columnIndex)) {
-            null
-        } else {
-            getLong(columnIndex)
-        }
 }
 
 internal data class SafMediaItem(

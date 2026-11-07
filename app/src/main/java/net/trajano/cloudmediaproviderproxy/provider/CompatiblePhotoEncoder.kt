@@ -29,15 +29,7 @@ internal object CompatiblePhotoEncoder {
         } finally { decoded.recycle() }
         try {
             while (true) {
-                for (quality in listOf(92, 85, 75, 60)) {
-                    checkCanceled()
-                    target.outputStream().use {
-                        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, it)) {
-                            throw IOException("Cannot encode compatible JPEG")
-                        }
-                    }
-                    if (target.length() in 1..maxBytes) return
-                }
+                if (encodeAtAvailableQualities(bitmap, target, maxBytes, checkCanceled)) return
                 if (bitmap.width == 1 && bitmap.height == 1) throw IOException("JPEG cannot fit size limit")
                 val smaller = bitmap.scale(maxOf(1, bitmap.width * 3 / 4),
                     maxOf(1, bitmap.height * 3 / 4), true)
@@ -45,5 +37,18 @@ internal object CompatiblePhotoEncoder {
                 bitmap = smaller
             }
         } finally { bitmap.recycle() }
+    }
+
+    private fun encodeAtAvailableQualities(bitmap: Bitmap, target: File, maxBytes: Long, checkCanceled: () -> Unit): Boolean {
+        for (quality in listOf(92, 85, 75, 60)) {
+            checkCanceled()
+            target.outputStream().use {
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, it)) {
+                    throw IOException("Cannot encode compatible JPEG")
+                }
+            }
+            if (target.length() in 1..maxBytes) return true
+        }
+        return false
     }
 }

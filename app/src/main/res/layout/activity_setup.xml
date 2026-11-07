@@ -37,7 +37,7 @@
             android:orientation="vertical"
             android:paddingTop="8dp">
 
-            <TextView
+            <androidx.appcompat.widget.AppCompatTextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/setup_body"
@@ -60,7 +60,7 @@
                     android:orientation="vertical"
                     android:padding="24dp">
 
-                    <TextView
+                    <androidx.appcompat.widget.AppCompatTextView
                         android:id="@+id/setup_section_title"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -75,7 +75,7 @@
                         android:gravity="center_vertical"
                         android:orientation="horizontal">
 
-                        <ImageView
+                        <androidx.appcompat.widget.AppCompatImageView
                             android:id="@+id/setup_provider_icon"
                             android:layout_width="40dp"
                             android:layout_height="40dp"
@@ -85,7 +85,7 @@
                             android:visibility="gone"
                             app:tint="@null" />
 
-                        <TextView
+                        <androidx.appcompat.widget.AppCompatTextView
                             android:id="@+id/setup_status"
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
@@ -107,7 +107,41 @@
                 android:textAllCaps="false"
                 app:cornerRadius="28dp" />
 
-            <TextView
+            <LinearLayout
+                android:id="@+id/nextcloud_storage_notice"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <androidx.appcompat.widget.AppCompatTextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/nextcloud_storage_title"
+                    android:textAppearance="@style/TextAppearance.Material3.TitleMedium" />
+
+                <androidx.appcompat.widget.AppCompatTextView
+                    android:id="@+id/nextcloud_storage_instructions"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/nextcloud_storage_instructions"
+                    android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/open_nextcloud_button"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:minHeight="48dp"
+                    android:text="@string/open_nextcloud_button"
+                    android:textAllCaps="false" />
+            </LinearLayout>
+
+            <androidx.appcompat.widget.AppCompatTextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
@@ -121,7 +155,7 @@
                 android:minHeight="48dp"
                 android:text="@string/compatible_photos_toggle" />
 
-            <TextView
+            <androidx.appcompat.widget.AppCompatTextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/compatible_photos_description"

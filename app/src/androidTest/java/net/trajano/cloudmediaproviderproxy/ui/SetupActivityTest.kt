@@ -21,6 +21,25 @@ import org.junit.runner.RunWith
 class SetupActivityTest {
 
     @Test
+    fun nextcloudStorageNoticeIncludesInstructionsAndAnOpenButton() {
+        ActivityScenario.launch(SetupActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val noticeId = activity.resources.getIdentifier("nextcloud_storage_notice", "id", activity.packageName)
+                assertTrue("Nextcloud storage notice must exist", noticeId != 0)
+                val buttonId = activity.resources.getIdentifier("open_nextcloud_button", "id", activity.packageName)
+                assertTrue("Nextcloud launch button must exist", buttonId != 0)
+                assertNotNull(activity.findViewById<com.google.android.material.button.MaterialButton>(buttonId))
+                val instructions = activity.findViewById<android.widget.TextView>(R.id.nextcloud_storage_instructions).text.toString()
+                assertTrue(instructions.contains("Allow access from other apps"))
+                assertTrue(instructions.contains("If the option is already off"))
+                val authority = SafRootPreferences(activity).getRootUri()?.authority
+                assertEquals(if (isNextcloudDocumentsAuthority(authority)) android.view.View.VISIBLE else android.view.View.GONE,
+                    activity.findViewById<android.view.View>(noticeId).visibility)
+            }
+        }
+    }
+
+    @Test
     fun setupScreenIncludesPhotoCompatibilityToggle() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val preferences = SafRootPreferences(context)

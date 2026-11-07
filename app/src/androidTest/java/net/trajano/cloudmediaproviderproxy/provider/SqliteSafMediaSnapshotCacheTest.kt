@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertNull
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -20,6 +21,154 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SqliteSafMediaSnapshotCacheTest {
+    @Test fun checkpointSchemaUpgradeRetainsTheExistingIndex() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val name = "legacy-snapshot-${System.nanoTime()}.db"
+        val key = "legacy"
+        val initial = SqliteSafMediaSnapshotCache(context, key, { snapshot(mediaItem("kept", 10L)) }, databaseName = name)
+        initial.currentSnapshot()
+        initial.invalidate()
+        android.database.sqlite.SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE).use { database ->
+            database.execSQL("DROP TABLE preparation_checkpoints")
+            database.version = 2
+        }
+        val restored = SqliteSafMediaSnapshotCache(context, key, { error("Upgrade must preserve the index") },
+            refreshIntervalMillis = TimeUnit.DAYS.toMillis(1), databaseName = name)
+        try {
+            assertEquals("kept", restored.currentSnapshot().mediaItems.single().mediaId)
+            restored.savePreparationSource("resumable", snapshot(mediaItem("pending", 20L)))
+            assertEquals("pending", restored.preparationSource("resumable")?.mediaItems?.single()?.mediaId)
+        } finally { restored.invalidate(); context.deleteDatabase(name) }
+    }
+
+    @Test fun preparationMetadataSurvivesRestartAndRejectsSupersededScans() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val key = "preparation-${System.nanoTime()}"
+        val first = SqliteSafMediaSnapshotCache(context, key, { error("Checkpoint must not scan SAF") })
+        first.savePreparationSource("scan-one", snapshot(mediaItem("pending", 10L)))
+        first.invalidate()
+        val restored = SqliteSafMediaSnapshotCache(context, key, { error("Checkpoint must not scan SAF") })
+        try {
+            assertEquals("pending", restored.preparationSource("scan-one")?.mediaItems?.single()?.mediaId)
+            restored.savePreparationSource("scan-two", snapshot(mediaItem("replacement", 20L)))
+            assertNull("A continuation cannot republish an older scan", restored.preparationSource("scan-one"))
+            assertEquals("replacement", restored.preparationSource("scan-two")?.mediaItems?.single()?.mediaId)
+        } finally { restored.invalidate() }
+    }
+
+    @Test fun updatingOnePhotoDoesNotRewriteUnchangedRows() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val key = "incremental-${System.nanoTime()}"
+        val kept = mediaItem("kept", 10L)
+        val cache = SqliteSafMediaSnapshotCache(context, key, { snapshot(kept) })
+        cache.currentSnapshot()
+        val trigger = "protect_unchanged_${System.nanoTime()}"
+        val database = android.database.sqlite.SQLiteDatabase.openDatabase(
+            context.getDatabasePath(SqliteSafMediaSnapshotCache.DATABASE_NAME).path, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE)
+        try {
+            database.execSQL("CREATE TRIGGER $trigger BEFORE DELETE ON snapshot_media_items " +
+                "WHEN OLD.cache_key = '$key' AND OLD.media_id = 'kept' " +
+                "BEGIN SELECT RAISE(ABORT, 'Unchanged row was rewritten'); END")
+            cache.publishSnapshot(snapshot(kept, mediaItem("new", 20L)))
+            assertEquals(2, cache.currentSnapshot().mediaItems.size)
+            assertEquals(10L, cache.currentSnapshot().mediaById.getValue("kept").syncGeneration)
+        } finally {
+            database.execSQL("DROP TRIGGER IF EXISTS $trigger")
+            database.close()
+            cache.invalidate()
+        }
+    }
+
+    @Test
+    fun androidXReadsSnapshotsWrittenThroughThePlatformDatabase() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val key = "platform-format-${System.nanoTime()}"
+        val initial = SqliteSafMediaSnapshotCache(context, key, { snapshot(mediaItem("kept", 10L)) })
+        initial.currentSnapshot()
+        initial.invalidate()
+        android.database.sqlite.SQLiteDatabase.openDatabase(
+            context.getDatabasePath(SqliteSafMediaSnapshotCache.DATABASE_NAME).path, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE,
+        ).use { database ->
+            database.execSQL("UPDATE snapshot_media_items SET display_name = ?, size_bytes = NULL WHERE cache_key = ?",
+                arrayOf("platform-written", key))
+        }
+        val restored = SqliteSafMediaSnapshotCache(context, key, { error("Must retain existing platform data") },
+            refreshIntervalMillis = TimeUnit.DAYS.toMillis(1))
+        try {
+            val item = restored.currentSnapshot().mediaItems.single()
+            assertEquals("platform-written", item.displayName)
+            assertNull(item.sizeBytes)
+            assertEquals(10L, item.syncGeneration)
+        } finally { restored.invalidate() }
+    }
+
+    @Test
+    fun sourceChangesDuringScheduledWorkRequestOneFollowUp() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val scheduled = AtomicInteger()
+        val cache = SqliteSafMediaSnapshotCache(context, "scheduled-${System.nanoTime()}",
+            { error("Scheduled work owns source reads") }, initializeInBackground = true,
+            requestBackgroundRefresh = { scheduled.incrementAndGet() })
+        try {
+            cache.currentSnapshot()
+            assertEquals(1, scheduled.get())
+            cache.beginScheduledRefresh()
+            repeat(10) { cache.requestRefresh() }
+            assertEquals(1, scheduled.get())
+            cache.publishSnapshot(snapshot(mediaItem("ready", 10L)))
+            cache.finishScheduledRefresh()
+            assertEquals(2, scheduled.get())
+            cache.beginScheduledRefresh()
+            cache.finishScheduledRefresh()
+            assertEquals(2, scheduled.get())
+        } finally { cache.invalidate() }
+    }
+
+    @Test
+    fun backgroundInitializationDelegatesToTheDurableScheduler() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val scheduled = CountDownLatch(1)
+        val scans = AtomicInteger()
+        val cache = SqliteSafMediaSnapshotCache(context, "durable-${System.nanoTime()}", {
+            scans.incrementAndGet()
+            snapshot()
+        }, initializeInBackground = true, requestBackgroundRefresh = { scheduled.countDown() })
+        try {
+            cache.currentSnapshot()
+            assertTrue("Indexing must be scheduled durably", scheduled.await(1, TimeUnit.SECONDS))
+            assertEquals("No in-process source scan should run", 0, scans.get())
+        } finally { cache.invalidate() }
+    }
+
+    @Test
+    fun aSlowInitialScanDoesNotBlockPickerQueries() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val committed = CountDownLatch(1)
+        val requests = Executors.newSingleThreadExecutor()
+        val cache = SqliteSafMediaSnapshotCache(context, "nonblocking-${System.nanoTime()}", {
+            started.countDown()
+            check(release.await(5, TimeUnit.SECONDS))
+            snapshot(mediaItem("ready", 10L))
+        }, initializeInBackground = true, onSnapshotChanged = {
+            if (release.count == 0L) committed.countDown()
+        })
+        try {
+            val first = requests.submit(Callable { cache.currentSnapshot() })
+            assertTrue("Picker query must return before the remote scan completes",
+                first.get(1, TimeUnit.SECONDS).mediaItems.isEmpty())
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            assertTrue(cache.currentSnapshot().mediaItems.isEmpty())
+            release.countDown()
+            assertTrue(committed.await(3, TimeUnit.SECONDS))
+            assertEquals("ready", cache.currentSnapshot().mediaItems.single().mediaId)
+        } finally { release.countDown(); requests.shutdownNow(); cache.invalidate() }
+    }
+
     @Test
     fun localCopyLinkSurvivesCacheRecreation() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
