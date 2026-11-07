@@ -10,6 +10,29 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PreviewFileStoreTest {
+    @Test fun failedLegacyCacheCleanupIsReportedWithoutDisablingTheCache() {
+        val directory = Files.createTempDirectory(java.io.File("build").toPath(), "legacy-preview-").toFile()
+        val legacy = java.io.File(directory, "old.preview").apply { mkdir() }
+        java.io.File(legacy, "occupied").writeText("legacy")
+        val warnings = mutableListOf<java.util.logging.LogRecord>()
+        val logger = java.util.logging.Logger.getLogger(PreviewFileStore::class.java.name)
+        val handler = object : java.util.logging.Handler() {
+            override fun publish(record: java.util.logging.LogRecord) { warnings += record }
+            override fun flush() = Unit
+            override fun close() = Unit
+        }
+        logger.addHandler(handler)
+        try {
+            val store = PreviewFileStore(directory)
+            assertTrue("Failed legacy cleanup must be reported", warnings.isNotEmpty())
+            assertEquals("fresh", store.fileFor("photo", 1L) { it.writeText("fresh") }.readText())
+        } finally {
+            logger.removeHandler(handler)
+            PreviewFileStore.invalidateDirectory(directory)
+            directory.deleteRecursively()
+        }
+    }
+
     @Test fun reclaimedCacheFileCanBeGeneratedAgain() {
         val directory = Files.createTempDirectory(java.io.File("build").toPath(), "preview-reclaimed-").toFile()
         val store = PreviewFileStore(directory)

@@ -7,12 +7,15 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
+import java.util.logging.Logger
 import okio.Path.Companion.toOkioPath
 
 /** One journaled disk cache per directory; snapshots protect files until a reader opens them. */
 internal class PreviewFileStore(private val previewDirectory: File, maxBytes: Long = DEFAULT_MAX_BYTES) {
     private val state = states.computeIfAbsent(previewDirectory.canonicalPath) {
-        previewDirectory.listFiles { file -> file.extension in setOf("preview", "tmp") }?.forEach { it.delete() }
+        previewDirectory.listFiles { file -> file.extension in setOf("preview", "tmp") }?.forEach {
+            if (it.exists() && !it.delete()) LOGGER.warning("Cannot remove legacy thumbnail: ${it.path}")
+        }
         DirectoryState(DiskCache.Builder().directory(File(previewDirectory, "coil-v1").toOkioPath())
             .maxSizeBytes(maxBytes).build())
     }
@@ -104,6 +107,7 @@ internal class PreviewFileStore(private val previewDirectory: File, maxBytes: Lo
     companion object {
         const val DEFAULT_MAX_BYTES = 128L * 1024 * 1024
         private val states = ConcurrentHashMap<String, DirectoryState>()
+        private val LOGGER = Logger.getLogger(PreviewFileStore::class.java.name)
         private val locks = ConcurrentHashMap<String, MediaLock>()
 
         fun invalidateDirectory(directory: File) {
